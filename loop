@@ -85,7 +85,9 @@
 # interactive setup session (goals/setup.md) that interviews you and rewrites
 # the seed into your real config. Setup is just a goal; the shell only seeds.
 #
-# DEPENDENCIES: babysit, box, jq, and the configured agent CLI (claude or pi).
+# DEPENDENCIES: babysit, git, jq, and the configured agent CLI (claude or pi).
+# box is OPTIONAL — if installed, workers run in box sandboxes; if not, loop falls
+# back to plain `git worktree` against repos registered with `loop repo add`.
 # (gh and other tools are used only by sensor scripts / worker agents, not loop.)
 # =============================================================================
 set -euo pipefail
@@ -103,6 +105,8 @@ PLAYBOOK="$LOOP_DATA_DIR/PLAYBOOK.md"          # judgment brain (data: grown ove
 GOALS_DIR="$LOOP_DATA_DIR/goals"               # desired state
 JOURNAL="$LOOP_DATA_DIR/journal.md"            # action log
 LOCK="$LOOP_DATA_DIR/.lock"
+REPOS_CONFIG="$LOOP_DATA_DIR/repos.json"        # box-less fallback: repo name → local path map
+WORKTREES_DIR="$LOOP_DATA_DIR/worktrees"        # box-less fallback: git worktrees live here
 
 # ---- colors (respect a tty + $NO_COLOR; $LOOP_COLOR is inherited by `loop _fmt`)
 if [ -n "${LOOP_COLOR:-}" ]; then :; elif [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then LOOP_COLOR=1; else LOOP_COLOR=0; fi
@@ -124,13 +128,17 @@ dep_hint() {
   case "$1" in
     babysit) echo "cargo install babysit   (or: nix profile install github:yusukeshib/babysit)" ;;
     box)     echo "cargo install box-cli   (or: curl -fsSL https://raw.githubusercontent.com/yusukeshib/box/main/install.sh | bash)" ;;
+    git)     echo "brew install git        (or your package manager: apt-get install git, ...)" ;;
     jq)      echo "brew install jq         (or your package manager: apt-get install jq, ...)" ;;
     *)       echo "see the tool's docs" ;;
   esac
 }
 require_deps() {
   local missing=0 c
-  for c in babysit box jq; do
+  # box is OPTIONAL: if present, workers get a sandboxed box workspace; if absent,
+  # loop falls back to plain `git worktree` against repos registered with
+  # `loop repo add` (so git is required, box is not).
+  for c in babysit git jq; do
     if ! command -v "$c" >/dev/null 2>&1; then
       [ "$missing" -eq 0 ] && echo "loop: missing required dependencies — cannot run:" >&2
       printf '  %-8s install:  %s\n' "$c" "$(dep_hint "$c")" >&2
@@ -139,6 +147,9 @@ require_deps() {
   done
   [ "$missing" -eq 0 ] || { printf '\nInstall the above, then re-run loop.\n' >&2; exit 1; }
 }
+
+# Is the optional box sandbox manager available?
+have_box() { command -v box >/dev/null 2>&1; }
 
 # ---- the inline default config (the only thing that needs "installing") ------
 # Written to $CONFIG on first run if it is absent. `tick` = how to run one
@@ -553,9 +564,76 @@ cmd_run() {
   done
 }
 
+# ---- box-less repo registry + git worktree fallback --------------------------
+# When `box` is not installed, loop manages worker workspaces itself with plain
+# `git worktree`. It maps a repo NAME (the same name workers use) to a local
+# checkout path via $REPOS_CONFIG (repos.json: {"<name>": "/abs/path", ...}).
+repo_path() {  # repo_path <name> -> prints local path, or empty
+  [ -f "$REPOS_CONFIG" ] || { echo; return; }
+  jq -r --arg n "$1" '.[$n] // empty' "$REPOS_CONFIG" 2>/dev/null
+}
+
+# Resolve (creating if needed) a git worktree for a session against a registered
+# repo. Prints the worktree path on success; errors to stderr + non-zero on fail.
+worktree_for() {  # worktree_for <session> <repo>
+  local session="$1" repo="$2" base wt branch
+  base="$(repo_path "$repo")"
+  if [ -z "$base" ] || [ ! -d "$base" ]; then
+    echo "start-session: repo '$repo' is not registered (box not installed)." >&2
+    echo "  register it first:  loop repo add $repo /path/to/$repo" >&2
+    return 1
+  fi
+  wt="$WORKTREES_DIR/$session"
+  if [ -d "$wt" ]; then printf '%s\n' "$wt"; return 0; fi   # reuse on re-spawn
+  mkdir -p "$WORKTREES_DIR"
+  git -C "$base" fetch origin >/dev/null 2>&1 || true       # best-effort freshen
+  branch="loop/$session"
+  # New branch if free; else attach the worktree to the existing branch.
+  if ! git -C "$base" worktree add "$wt" -b "$branch" >/dev/null 2>&1; then
+    if ! git -C "$base" worktree add "$wt" "$branch" >/dev/null 2>&1; then
+      echo "start-session: failed to create git worktree for $session (repo: $repo at $base)" >&2
+      return 1
+    fi
+  fi
+  printf '%s\n' "$wt"
+}
+
+# ---- repo registry command (box-less mode) -----------------------------------
+cmd_repo() {
+  ensure_dirs
+  local sub="${1:-list}"
+  case "$sub" in
+    add)
+      local name="${2:?usage: loop repo add <name> <path>}"
+      local path="${3:?usage: loop repo add <name> <path>}"
+      path="$(cd "$path" 2>/dev/null && pwd)" || { echo "loop repo add: no such directory: $3" >&2; exit 1; }
+      git -C "$path" rev-parse --git-dir >/dev/null 2>&1 || { echo "loop repo add: not a git repo: $path" >&2; exit 1; }
+      [ -f "$REPOS_CONFIG" ] || echo '{}' > "$REPOS_CONFIG"
+      local tmp; tmp="$(mktemp)"
+      jq --arg n "$name" --arg p "$path" '.[$n] = $p' "$REPOS_CONFIG" > "$tmp" && mv "$tmp" "$REPOS_CONFIG"
+      echo "registered $name -> $path"
+      have_box && echo "note: box is installed; loop will use box and ignore this registry."
+      ;;
+    rm|remove)
+      local name="${2:?usage: loop repo rm <name>}"
+      [ -f "$REPOS_CONFIG" ] || { echo "no repos registered"; exit 0; }
+      local tmp; tmp="$(mktemp)"
+      jq --arg n "$name" 'del(.[$n])' "$REPOS_CONFIG" > "$tmp" && mv "$tmp" "$REPOS_CONFIG"
+      echo "unregistered $name"
+      ;;
+    list|ls|"")
+      if have_box; then box repo list 2>/dev/null && echo "(box is installed — the above is box's registry; loop uses it)"; \
+      elif [ -f "$REPOS_CONFIG" ]; then jq -r 'to_entries[] | "  \(.key)  ->  \(.value)"' "$REPOS_CONFIG"; \
+      else echo "no repos registered (loop repo add <name> <path>)"; fi
+      ;;
+    *) echo "loop repo: unknown subcommand '$sub' (add | rm | list)" >&2; exit 1 ;;
+  esac
+}
+
 # ---- start a worker session --------------------------------------------------
 # loop start-session <id> <repo|-> "<prompt>" [runner]
-#   <repo>  a box-registered repo name → worker gets a sandboxed box workspace.
+#   <repo>  a repo name → worker gets a sandboxed workspace (box if installed,
+#           else a `git worktree` against a `loop repo add`-registered repo).
 #           Pass - for meta work on the loop's data dir (bootstrap, goal grooming).
 cmd_start_session() {
   ensure_dirs
@@ -606,11 +684,12 @@ EOF
 
   # Resolve the working directory:
   #   repo == '-' → meta work on the loop data dir (PLAYBOOK/goals), no sandbox
-  #   otherwise   → a sandboxed box workspace (`box new` prints its path)
+  #   box present → a sandboxed box workspace (`box new` prints its path)
+  #   box absent  → a plain `git worktree` against a `loop repo add`-registered repo
   local workspace
   if [ "$repo" = "-" ]; then
     workspace="$LOOP_DATA_DIR"
-  else
+  elif have_box; then
     if ! workspace="$(box new "$session" --repo "$repo" 2>/dev/null)"; then
       workspace="$(box switch "$session" 2>/dev/null || true)"
     fi
@@ -619,6 +698,8 @@ EOF
       echo "start-session: could not resolve box workspace for $session (repo: $repo)" >&2
       exit 1
     fi
+  else
+    workspace="$(worktree_for "$session" "$repo")" || exit 1
   fi
 
   # Run the agent in the workspace under babysit, detached. bash -lc gives the
@@ -642,6 +723,8 @@ Usage:
   loop tick                     run a single beat and exit (debug / cron)
   loop start-session <id> <repo|-> "<prompt>" [runner]
                                 start a worker session (used by the tick AI)
+  loop repo add <name> <path>   register a repo for box-less git-worktree mode
+  loop repo list                list registered repos (box's, if box is present)
   loop help                     show this help
 
 Paths (override via env LOOP_CONFIG / LOOP_DATA_DIR):
@@ -651,7 +734,11 @@ Paths (override via env LOOP_CONFIG / LOOP_DATA_DIR):
 Worker sessions and workspaces are managed by external tools:
   babysit ls                    list worker sessions (⚑ = waiting for you)
   babysit attach -s loop-<id>   enter a waiting session and talk to it
-  box ls                        list sandbox workspaces
+  box ls                        list sandbox workspaces (box mode)
+
+box is OPTIONAL. With box installed, workers run in box workspaces. Without it,
+loop falls back to plain \`git worktree\` against repos you register with
+\`loop repo add <name> <path>\` (worktrees live under \$data/worktrees).
 
 Fix judgment by editing PLAYBOOK.md (in the data dir) and committing — it takes
 effect next tick. Drop a file at \$data/paused to pause the loop.
@@ -664,6 +751,7 @@ case "$cmd" in
   tick)            require_deps; cmd_tick ;;
   _fmt)            cmd_fmt ;;
   start-session)   require_deps; shift; cmd_start_session "$@" ;;
+  repo)            shift; cmd_repo "$@" ;;
   help|-h|--help)  usage ;;
-  *) echo "loop: unknown command '$cmd' (try: run, tick, start-session, help)" >&2; exit 1 ;;
+  *) echo "loop: unknown command '$cmd' (try: run, tick, start-session, repo, help)" >&2; exit 1 ;;
 esac
