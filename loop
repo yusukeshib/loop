@@ -95,6 +95,8 @@
 set -euo pipefail
 shopt -s nullglob
 
+LOOP_VERSION="0.1.0"
+
 # ---- paths -------------------------------------------------------------------
 self="${BASH_SOURCE[0]}"
 LOOP_BIN="$(cd "$(dirname "$self")" && pwd)/$(basename "$self")"
@@ -727,6 +729,7 @@ Usage:
   loop tick                     run a single beat and exit (debug / cron)
   loop start-session <id> "<prompt>" [runner]
                                 start a worker session (used by the tick AI)
+  loop version                  print the loop version
   loop help                     show this help
 
 Paths (override via env LOOP_CONFIG / LOOP_DATA_DIR):
@@ -753,6 +756,7 @@ case "$cmd" in
   tick)            require_deps; cmd_tick ;;
   _fmt)            cmd_fmt ;;
   start-session)   require_deps; shift; cmd_start_session "$@" ;;
+  version|--version|-V) echo "loop $LOOP_VERSION" ;;
   help|-h|--help)  usage ;;
   *) echo "loop: unknown command '$cmd' (try: run, run <goal>, tick, start-session, help)" >&2; exit 1 ;;
 esac
