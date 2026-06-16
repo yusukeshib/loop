@@ -95,7 +95,7 @@
 set -euo pipefail
 shopt -s nullglob
 
-LOOOP_VERSION="0.2.0"
+LOOOP_VERSION="0.3.0"
 
 # ---- paths -------------------------------------------------------------------
 self="${BASH_SOURCE[0]}"
@@ -110,6 +110,11 @@ GOALS_DIR="$LOOOP_DATA_DIR/goals"               # desired state
 JOURNAL="$LOOOP_DATA_DIR/journal.md"            # action log
 LOCK="$LOOOP_DATA_DIR/.lock"
 SNAPSHOTS_DIR="$LOOOP_DATA_DIR/snapshots"        # per-tick sensor output (scratch: wiped each tick)
+CLAIMS_DIR="$LOOOP_DATA_DIR/claims"              # worker leases (scratch): claims/<name>.json with a
+                                                 # .session field; the pulse reaps dead ones & surfaces
+                                                 # live ones, but never interprets the rest (ownership
+                                                 # semantics live in the PLAYBOOK — the shell has no repo concept)
+export CLAIMS_DIR
 
 # ---- colors (respect a tty + $NO_COLOR; $LOOOP_COLOR is inherited by `looop _fmt`)
 if [ -n "${LOOOP_COLOR:-}" ]; then :; elif [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then LOOOP_COLOR=1; else LOOOP_COLOR=0; fi
@@ -177,7 +182,7 @@ JSON
 # Config is seeded inline; data (memory) is created empty — the PLAYBOOK is
 # written by the bootstrap setup session, not seeded.
 ensure_dirs() {
-  mkdir -p "$(dirname "$CONFIG")" "$SENSORS_DIR" "$SNAPSHOTS_DIR" \
+  mkdir -p "$(dirname "$CONFIG")" "$SENSORS_DIR" "$SNAPSHOTS_DIR" "$CLAIMS_DIR" \
            "$GOALS_DIR/archive" "$LOOOP_DATA_DIR/prompts"
   [ -f "$CONFIG" ] || default_config > "$CONFIG"
   # Fresh data dir (no PLAYBOOK yet) → lay down the embedded starter seed once.
@@ -187,6 +192,7 @@ ensure_dirs() {
     cat > "$LOOOP_DATA_DIR/.gitignore" <<'GI'
 snapshots/
 prompts/
+claims/
 .lock/
 .last-tick-hash
 .tmux-surfaced
@@ -482,8 +488,39 @@ EOF
     | grep . || echo "(none)"
 
   echo
+  echo "=== WORKER CLAIMS (live leases — a name with a claim here is OWNED by a worker; do NOT act on it yourself, the owner is reconciling it) ==="
+  # reap_stale_claims has already run this beat, so every file here is a LIVE
+  # lease (its session is alive). The pulse shows the raw claim; the PLAYBOOK
+  # decides what the <name> means and how to honor ownership.
+  { for o in "$CLAIMS_DIR"/*.json; do
+      [ -e "$o" ] || continue
+      printf -- '- %s: %s\n' "$(basename "${o%.json}")" "$(tr -d '\n' < "$o")"
+    done; } | grep . || echo "(none)"
+
+  echo
   echo "=== RECENT JOURNAL ==="
   tail -20 "$JOURNAL" 2>/dev/null || echo "(empty)"
+}
+
+# ---- worker leases (claims) --------------------------------------------------
+# A claim is claims/<name>.json carrying a .session field. A worker writes one to
+# announce "I own <name>" (the PLAYBOOK decides what <name> means — e.g. a repo)
+# and deletes it when done. The pulse only does the DETERMINISTIC half of the
+# lease: reap claims whose session is no longer alive (crash-safety), so the AI
+# never has to remember to clean up a corpse's lease. It never interprets the
+# claim body — ownership judgment stays in the PLAYBOOK.
+reap_stale_claims() {
+  [ -d "$CLAIMS_DIR" ] || return 0
+  local alive cf sess
+  alive="$(babysit ls --json 2>/dev/null | jq -r '.[] | select(.alive==true) | .id' 2>/dev/null)"
+  for cf in "$CLAIMS_DIR"/*.json; do
+    [ -e "$cf" ] || continue
+    sess="$(jq -r '.session // empty' "$cf" 2>/dev/null)"
+    if [ -z "$sess" ] || ! printf '%s\n' "$alive" | grep -qxF "$sess"; then
+      rm -f "$cf"
+      log "  ${c_dim}reaped stale claim $(basename "$cf") (session '${sess:-?}' not alive)${c_rst}"
+    fi
+  done
 }
 
 # ---- one beat ----------------------------------------------------------------
@@ -501,6 +538,7 @@ tick() {
   #    self-kill when fully done (see the WORKER CONTRACT in start-session), which
   #    turns them into dead sessions; prune clears them so babysit ls stays clean.
   babysit prune >/dev/null 2>&1 || true
+  reap_stale_claims   # drop leases held by sessions that are no longer alive
 
   # 1. sense the world (run sensors) — each prints one JSON snapshot; log each
   #    one with its duration so a slow sensor (gh/linear/…) is visible.
@@ -636,6 +674,7 @@ cmd_run_goal() {
   fi
 
   babysit prune >/dev/null 2>&1 || true
+  reap_stale_claims   # drop leases held by sessions that are no longer alive
 
   # fresh sensors so the move reflects the current world (same as a tick)
   local s name
@@ -708,6 +747,14 @@ cmd_start_session() {
     babysit kill -s $session
   (this lets the pulse prune the corpse). NEVER do this mid-task or while waiting
   on a human.
+- LEASE (ONLY if the PLAYBOOK/goal tells you to claim this task) — announce
+  ownership BEFORE any work so a tick or sibling can't duplicate/race you, and
+  release it when done:
+    mkdir -p claims && printf '{"session":"%s","name":"%s"}\n' "\$BABYSIT_SESSION_ID" "<name>" > "claims/<name>.json"
+  (<name> and any extra fields are defined by the goal — e.g. one file per repo.)
+  Delete claims/<name>.json the instant the task is fully done, right before the
+  kill above. If you crash the pulse auto-reaps your claim; on a clean finish YOU
+  delete it. NEVER sit/sleep/poll while holding a claim — act and move on.
 - WORKSPACE: you start in the loop data dir. That is ONLY for meta work
   (PLAYBOOK / goals / sensors). If your task touches a code repo, provision your
   OWN sandbox FIRST and cd into it — never edit code in the data dir:
