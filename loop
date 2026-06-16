@@ -115,9 +115,9 @@ if [ -n "${LOOP_COLOR:-}" ]; then :; elif [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; th
 export LOOP_COLOR
 if [ "$LOOP_COLOR" = 1 ]; then
   c_rst=$'\033[0m'; c_dim=$'\033[2m'; c_b=$'\033[1m'
-  c_blue=$'\033[34m'; c_cyan=$'\033[36m'; c_grn=$'\033[32m'; c_red=$'\033[31m'; c_yel=$'\033[33m'
+  c_cyan=$'\033[36m'; c_grn=$'\033[32m'; c_red=$'\033[31m'; c_yel=$'\033[33m'
 else
-  c_rst=; c_dim=; c_b=; c_blue=; c_cyan=; c_grn=; c_red=; c_yel=
+  c_rst=; c_dim=; c_b=; c_cyan=; c_grn=; c_red=; c_yel=
 fi
 
 log() { printf '%s[%s]%s %s\n' "$c_dim" "$(date '+%H:%M:%S')" "$c_rst" "$*"; }
@@ -494,6 +494,7 @@ tick() {
   # 1. sense the world (run sensors) — each prints one JSON snapshot; log each
   #    one with its duration so a slow sensor (gh/linear/…) is visible.
   local s name t0 n
+  # shellcheck disable=SC2012  # glob already expands paths safely; we only count lines
   n=$(ls "$SENSORS_DIR"/*.sh 2>/dev/null | wc -l | tr -d ' ')
   if [ "$n" -gt 0 ]; then log "${c_b}sensing the world${c_rst} ${c_dim}($n sensors)${c_rst}…"; fi
   for s in "$SENSORS_DIR"/*.sh; do
@@ -604,6 +605,7 @@ cmd_run_goal() {
   if [ ! -f "$gf" ]; then
     echo "loop run: no such goal '$id' (looked in goals/ and goals/archive/)" >&2
     echo "available goals:" >&2
+    # shellcheck disable=SC2012  # display-only listing; glob handles filenames
     ( cd "$GOALS_DIR" 2>/dev/null && ls ./*.md 2>/dev/null | sed 's#\.md$##;s#^\./#  #' ) >&2
     exit 1
   fi

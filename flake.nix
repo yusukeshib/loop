@@ -48,7 +48,7 @@
         };
 
         devShells.default = pkgs.mkShell {
-          packages = with pkgs; [ bash coreutils git jq shellcheck ];
+          packages = with pkgs; [ bash coreutils git jq shellcheck shfmt ];
         };
       });
 }
