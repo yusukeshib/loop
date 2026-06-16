@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# loop — a tiny, portable, Kubernetes-shaped control loop for your work.
+# looop — a tiny, portable, Kubernetes-shaped control loop for your work.
 #
 # This single file IS the whole program: principles, rules, and defaults are all
 # inside it. No README, no helper dir required — copy this one file and run it.
@@ -12,12 +12,12 @@
 # important move, repeat. Now a machine does that. It is a reconciliation loop,
 # exactly like Kubernetes — with one deliberate twist (see RULE 1):
 #
-#   Kubernetes            loop
+#   Kubernetes            looop
 #   ----------            ----
 #   desired state (YAML)  goals/*.md         "how things should be" (inert files)
 #   etcd                  git (the data dir) PLAYBOOK + goals + journal = memory
 #   informers / watch     sensors/*.sh       scripts that print the world as JSON
-#   reconcile loop        the pulse (`loop`) observe → diff → one move, every tick
+#   reconcile loop        the pulse (`looop`) observe → diff → one move, every tick
 #   scheduler policy      PLAYBOOK.md        priorities + guardrails, in prose
 #   Job / Pod             worker session     a real agent doing hands-on work
 #   Pod sandbox           box workspace      a git worktree per session
@@ -59,25 +59,25 @@
 # CODE / CONFIG / DATA are cleanly separated (all overridable by env)
 # -----------------------------------------------------------------------------
 #   EXEC    this one script                              the program (portable)
-#   CONFIG  ${XDG_CONFIG_HOME:-~/.config}/loop.json       one file: runner wiring
-#           └ override with $LOOP_CONFIG                  (seeded inline if absent)
-#   DATA    ${XDG_STATE_HOME:-~/.local/state}/loop/        the git-tracked memory
-#           └ override with $LOOP_DATA_DIR
+#   CONFIG  ${XDG_CONFIG_HOME:-~/.config}/looop.json       one file: runner wiring
+#           └ override with $LOOOP_CONFIG                  (seeded inline if absent)
+#   DATA    ${XDG_STATE_HOME:-~/.local/state}/looop/        the git-tracked memory
+#           └ override with $LOOOP_DATA_DIR
 #             PLAYBOOK.md  goals/  journal.md  sensors/*.sh   ← commit these
 #             snapshots/  prompts/  .lock  .last-tick-hash  paused  ← scratch (gitignored)
 #
 # SUBCOMMANDS
-#   loop                run the pulse (default; foreground, Ctrl-C to stop)
-#   loop tick           run a single beat and exit (debug / cron; refuses while
+#   looop                run the pulse (default; foreground, Ctrl-C to stop)
+#   looop tick           run a single beat and exit (debug / cron; refuses while
 #                       the pulse is already running)
-#   loop start-session <id> "<prompt>" [runner]
+#   looop start-session <id> "<prompt>" [runner]
 #                       start a worker session (called by the tick AI). The
 #                       worker starts in the data dir; if it touches code it
 #                       provisions its OWN sandbox (box/worktree) per the PLAYBOOK.
-#   loop help           show help
+#   looop help           show help
 #
 # WATCH / INTERVENE (workers + workspaces are external tools, not reinvented):
-#   babysit ls | attach -s loop-<id> | log | screenshot     ⚑ = a worker wants you
+#   babysit ls | attach -s looop-<id> | log | screenshot     ⚑ = a worker wants you
 #   box ls                                                  worker sandboxes (if box)
 #
 # BOOTSTRAP: a fresh data dir is seeded once (see seed_data) with a starter
@@ -90,31 +90,31 @@
 # pulse provisions NO workspaces; a worker that touches code makes its own
 # sandbox (box if available, else git worktree), so box/git are worker concerns,
 # not pulse prerequisites.
-# (gh and other tools are used only by sensor scripts / worker agents, not loop.)
+# (gh and other tools are used only by sensor scripts / worker agents, not looop.)
 # =============================================================================
 set -euo pipefail
 shopt -s nullglob
 
-LOOP_VERSION="0.2.0"
+LOOOP_VERSION="0.2.0"
 
 # ---- paths -------------------------------------------------------------------
 self="${BASH_SOURCE[0]}"
-LOOP_BIN="$(cd "$(dirname "$self")" && pwd)/$(basename "$self")"
-LOOP_DATA_DIR="${LOOP_DATA_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/loop}"
-CONFIG="${LOOP_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/loop.json}"   # the only config: runner wiring
-export LOOP_BIN LOOP_DATA_DIR CONFIG
+LOOOP_BIN="$(cd "$(dirname "$self")" && pwd)/$(basename "$self")"
+LOOOP_DATA_DIR="${LOOOP_DATA_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/looop}"
+CONFIG="${LOOOP_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/looop.json}"   # the only config: runner wiring
+export LOOOP_BIN LOOOP_DATA_DIR CONFIG
 
-SENSORS_DIR="$LOOP_DATA_DIR/sensors"           # sensor scripts (data: AI writes them as needed)
-PLAYBOOK="$LOOP_DATA_DIR/PLAYBOOK.md"          # judgment brain (data: grown over time)
-GOALS_DIR="$LOOP_DATA_DIR/goals"               # desired state
-JOURNAL="$LOOP_DATA_DIR/journal.md"            # action log
-LOCK="$LOOP_DATA_DIR/.lock"
-SNAPSHOTS_DIR="$LOOP_DATA_DIR/snapshots"        # per-tick sensor output (scratch: wiped each tick)
+SENSORS_DIR="$LOOOP_DATA_DIR/sensors"           # sensor scripts (data: AI writes them as needed)
+PLAYBOOK="$LOOOP_DATA_DIR/PLAYBOOK.md"          # judgment brain (data: grown over time)
+GOALS_DIR="$LOOOP_DATA_DIR/goals"               # desired state
+JOURNAL="$LOOOP_DATA_DIR/journal.md"            # action log
+LOCK="$LOOOP_DATA_DIR/.lock"
+SNAPSHOTS_DIR="$LOOOP_DATA_DIR/snapshots"        # per-tick sensor output (scratch: wiped each tick)
 
-# ---- colors (respect a tty + $NO_COLOR; $LOOP_COLOR is inherited by `loop _fmt`)
-if [ -n "${LOOP_COLOR:-}" ]; then :; elif [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then LOOP_COLOR=1; else LOOP_COLOR=0; fi
-export LOOP_COLOR
-if [ "$LOOP_COLOR" = 1 ]; then
+# ---- colors (respect a tty + $NO_COLOR; $LOOOP_COLOR is inherited by `looop _fmt`)
+if [ -n "${LOOOP_COLOR:-}" ]; then :; elif [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then LOOOP_COLOR=1; else LOOOP_COLOR=0; fi
+export LOOOP_COLOR
+if [ "$LOOOP_COLOR" = 1 ]; then
   c_rst=$'\033[0m'; c_dim=$'\033[2m'; c_b=$'\033[1m'
   c_cyan=$'\033[36m'; c_grn=$'\033[32m'; c_red=$'\033[31m'; c_yel=$'\033[33m'
 else
@@ -124,7 +124,7 @@ fi
 log() { printf '%s[%s]%s %s\n' "$c_dim" "$(date '+%H:%M:%S')" "$c_rst" "$*"; }
 
 # ---- dependency preflight ----------------------------------------------------
-# loop is only glue: it orchestrates external tools. If any required command is
+# looop is only glue: it orchestrates external tools. If any required command is
 # missing, fail fast with install instructions and exit 1 (RULE: the pulse must
 # not limp along half-wired).
 dep_hint() {
@@ -141,12 +141,12 @@ require_deps() {
   # not a prerequisite for the pulse to run.
   for c in babysit jq; do
     if ! command -v "$c" >/dev/null 2>&1; then
-      [ "$missing" -eq 0 ] && echo "loop: missing required dependencies — cannot run:" >&2
+      [ "$missing" -eq 0 ] && echo "looop: missing required dependencies — cannot run:" >&2
       printf '  %-8s install:  %s\n' "$c" "$(dep_hint "$c")" >&2
       missing=1
     fi
   done
-  [ "$missing" -eq 0 ] || { printf '\nInstall the above, then re-run loop.\n' >&2; exit 1; }
+  [ "$missing" -eq 0 ] || { printf '\nInstall the above, then re-run looop.\n' >&2; exit 1; }
 }
 
 # ---- the inline default config (the only thing that needs "installing") ------
@@ -164,7 +164,7 @@ default_config() {
       "resume": "claude --resume"
     },
     "pi": {
-      "tick": "pi -p --mode json -ne --model claude-sonnet-4-5 --thinking low 'Execute the loop tick instructions provided on stdin.' | \"$LOOP_BIN\" _fmt",
+      "tick": "pi -p --mode json -ne --model claude-sonnet-4-5 --thinking low 'Execute the looop tick instructions provided on stdin.' | \"$LOOOP_BIN\" _fmt",
       "interactive": "pi --model claude-opus-4-8 --thinking medium @{{prompt_file}}",
       "resume": "pi --session"
     }
@@ -178,13 +178,13 @@ JSON
 # written by the bootstrap setup session, not seeded.
 ensure_dirs() {
   mkdir -p "$(dirname "$CONFIG")" "$SENSORS_DIR" "$SNAPSHOTS_DIR" \
-           "$GOALS_DIR/archive" "$LOOP_DATA_DIR/prompts"
+           "$GOALS_DIR/archive" "$LOOOP_DATA_DIR/prompts"
   [ -f "$CONFIG" ] || default_config > "$CONFIG"
   # Fresh data dir (no PLAYBOOK yet) → lay down the embedded starter seed once.
   [ -f "$PLAYBOOK" ] || seed_data
   # Keep the data dir a clean git "memory": commit PLAYBOOK/goals/journal/sensors, ignore scratch.
-  if [ ! -f "$LOOP_DATA_DIR/.gitignore" ]; then
-    cat > "$LOOP_DATA_DIR/.gitignore" <<'GI'
+  if [ ! -f "$LOOOP_DATA_DIR/.gitignore" ]; then
+    cat > "$LOOOP_DATA_DIR/.gitignore" <<'GI'
 snapshots/
 prompts/
 .lock/
@@ -204,7 +204,7 @@ GI
 
 cfg() { jq -r "$1" "$CONFIG"; }
 
-# ---- progressive output formatter (internal: `loop _fmt`) --------------------
+# ---- progressive output formatter (internal: `looop _fmt`) --------------------
 # Reads a `pi --mode json` NDJSON event stream on stdin and prints friendly,
 # line-buffered progress as it happens: one line per tool call (so you see what
 # is executing live), error markers, and the assistant's narrative as each turn
@@ -250,15 +250,15 @@ single most important one — then stop and append one line to journal.md.
    work, your top priority is the `setup` goal (goals/setup.md): start ONE
    interactive setup session to interview me, then rewrite this PLAYBOOK and
    create real goals + sensor scripts. Start it with:
-     loop start-session setup "$(cat goals/setup.md)"
-   If a session loop-setup already exists, do nothing and wait for me.
+     looop start-session setup "$(cat goals/setup.md)"
+   If a session looop-setup already exists, do nothing and wait for me.
 2. A goal whose situation changed and needs a move.
 3. Recurring goals that are due today (check each goal's notes vs sensor-today.json).
 4. Otherwise, do nothing.
 
 ## Moves
 - Small reversible actions directly (edit a goal, write an sensor script).
-- Hands-on / interactive work: loop start-session <id> "<prompt>"
+- Hands-on / interactive work: looop start-session <id> "<prompt>"
   (<id> matches the goal file name. For a RECURRING goal use a date-stamped id
   like name-YYYYMMDD so a finished run never blocks the next one.)
 - WORKSPACES: a worker starts in the data dir (fine for goal/sensor grooming).
@@ -269,7 +269,7 @@ single most important one — then stop and append one line to journal.md.
 ## Guardrails
 - NEVER do irreversible things (merge, public comments, closing issues, deleting
   data, deploys) without explicit human approval: prepare fully, then
-  `babysit flag -s loop-<id> "<why>"` and wait. I attach and answer.
+  `babysit flag -s looop-<id> "<why>"` and wait. I attach and answer.
 - When you lack information or context, ASK me (flag + wait) rather than guess.
 - One move per tick. When unsure, do nothing and say why in journal.md.
 SEED
@@ -283,7 +283,7 @@ setup. You run as an interactive worker session, in the loop data dir.
 
 BE VERY INQUISITIVE: ask ONE focused question at a time, wait, dig in, never
 assume. First raise a flag so I know you are waiting:
-  babysit flag -s loop-setup "setup: attach and answer my questions"
+  babysit flag -s looop-setup "setup: attach and answer my questions"
 
 Cover at least:
 - What work should this loop watch over and push forward day to day?
@@ -303,7 +303,7 @@ Then, with my agreement (show drafts BEFORE writing):
 - create ./goals/*.md for what I am actually working on now;
 - write ./sensors/*.sh we agreed on.
 Finally archive this goal (move to goals/archive/), unflag yourself
-(babysit unflag -s loop-setup), and tell me the next tick will pick it up.
+(babysit unflag -s looop-setup), and tell me the next tick will pick it up.
 SEED
 
   cat > "$GOALS_DIR/playbook-daily.md" <<'SEED'
@@ -318,7 +318,7 @@ is newer than the last-improved date below — make ONE small improvement:
   one). Keep it to a single small change.
 - Do it as an interactive session in the data dir, with a DATE-STAMPED id so a
   finished run never blocks tomorrow's (RULE: recurring goals use dated ids):
-     loop start-session playbook-YYYYMMDD - "<the task above>"
+     looop start-session playbook-YYYYMMDD - "<the task above>"
 - PLAYBOOK changes affect every future tick, so PROPOSE the diff and
   `babysit flag` for my confirmation before committing.
 - When done, set last-improved below to today's date. Occasionally `babysit prune`
@@ -344,10 +344,10 @@ SEED
 surface_attention() {
   local flags att
   flags="$(babysit ls --json 2>/dev/null \
-    | jq -r '.[] | select(.id|startswith("loop-")) | select(.note != null and .note != "")
+    | jq -r '.[] | select(.id|startswith("looop-")) | select(.note != null and .note != "")
         | "  ⚑ \(.id)\n     \(.note)\n     → babysit attach -s \(.id)"' 2>/dev/null || true)"
   att=""
-  [ -s "$LOOP_DATA_DIR/attention.md" ] && att="$(sed 's/^/  /' "$LOOP_DATA_DIR/attention.md")"
+  [ -s "$LOOOP_DATA_DIR/attention.md" ] && att="$(sed 's/^/  /' "$LOOOP_DATA_DIR/attention.md")"
   [ -z "$flags" ] && [ -z "$att" ] && return 0
   log "${c_yel}${c_b}👁  NEEDS YOU${c_rst}"
   [ -n "$att" ] && printf '%s\n' "$att"
@@ -360,14 +360,14 @@ surface_attention() {
 # or a transient OS notification. Idempotent: at most one window per flagged
 # session, tracked in .tmux-surfaced; unflag→reflag pops a fresh one. The pulse
 # runs detached (no $TMUX), so we target the running server's current session.
-# Disable with LOOP_TMUX_SURFACE=0. Add -d to new-window to stop it stealing focus.
+# Disable with LOOOP_TMUX_SURFACE=0. Add -d to new-window to stop it stealing focus.
 tmux_surface() {
-  [ "${LOOP_TMUX_SURFACE:-1}" = "0" ] && return 0
+  [ "${LOOOP_TMUX_SURFACE:-1}" = "0" ] && return 0
   command -v tmux >/dev/null 2>&1 || return 0
   tmux info >/dev/null 2>&1 || return 0          # no server running → nothing to pop into
-  local seen="$LOOP_DATA_DIR/.tmux-surfaced" ids existing id wname
+  local seen="$LOOOP_DATA_DIR/.tmux-surfaced" ids existing id wname
   ids="$(babysit ls --json 2>/dev/null \
-    | jq -r '.[] | select(.id|startswith("loop-")) | select(.note != null and .note != "") | .id' 2>/dev/null || true)"
+    | jq -r '.[] | select(.id|startswith("looop-")) | select(.note != null and .note != "") | .id' 2>/dev/null || true)"
   # Prune the seen-list to only still-flagged ids, so a re-flag pops again later.
   touch "$seen"
   printf '%s\n' "$ids" | grep -Fxf "$seen" > "$seen.tmp" 2>/dev/null || : > "$seen.tmp"
@@ -377,7 +377,7 @@ tmux_surface() {
   while IFS= read -r id; do
     [ -z "$id" ] && continue
     grep -qxF "$id" "$seen" 2>/dev/null && continue              # already surfaced this flag
-    wname="⚑${id#loop-}"
+    wname="⚑${id#looop-}"
     printf '%s\n' "$existing" | grep -qxF "$wname" && continue   # window already open
     if tmux new-window -n "$wname" "babysit attach -s '$id'" 2>/dev/null; then
       printf '%s\n' "$id" >> "$seen"
@@ -395,14 +395,14 @@ world_hash() {
     local f
     for f in "$PLAYBOOK" "$GOALS_DIR"/*.md "$SNAPSHOTS_DIR"/*.json; do
       [ -f "$f" ] || continue
-      printf '@@ %s\n' "${f#"$LOOP_DATA_DIR"/}"; cat "$f"
+      printf '@@ %s\n' "${f#"$LOOOP_DATA_DIR"/}"; cat "$f"
     done
-    # worker sessions (id prefixed 'loop-'). Hash only the STABLE signal —
+    # worker sessions (id prefixed 'looop-'). Hash only the STABLE signal —
     # id/state/exit_code/flag-note — NOT the ever-incrementing age column, so a
     # tick fires on a real transition (worker started / exited / raised a flag)
     # and stays idle otherwise (incl. while exited-but-unpruned sessions linger).
     babysit ls --json 2>/dev/null \
-      | jq -r '.[] | select(.id|startswith("loop-")) | "\(.id) \(.state) \(.exit_code) \(.note)"' \
+      | jq -r '.[] | select(.id|startswith("looop-")) | "\(.id) \(.state) \(.exit_code) \(.note)"' \
       || true
   } | shasum | cut -d' ' -f1
 }
@@ -423,9 +423,9 @@ every rule & guardrail, and still append exactly ONE line to journal.md.
 EOF
   fi
   cat <<EOF
-You are "loop", a personal operations agent. This is one tick of a loop; your
+You are "looop", a personal operations agent. This is one tick of a loop; your
 process is disposable. Your working directory is the loop's DATA dir
-($LOOP_DATA_DIR): goals/, journal.md and sensors/ are here; edit with relative paths.
+($LOOOP_DATA_DIR): goals/, journal.md and sensors/ are here; edit with relative paths.
 
 Read the PLAYBOOK, goals, sensor readings and sessions below, then make exactly
 ONE move — the single most important one — and stop.
@@ -437,7 +437,7 @@ Moves:
   to stdout) when you need a new view of the world; it runs from next tick
 - start a worker session for hands-on work (runs an agent under babysit, in the
   data dir):
-    $LOOP_BIN start-session <id> "<detailed prompt for the worker>"
+    $LOOOP_BIN start-session <id> "<detailed prompt for the worker>"
   <id> matches the goal file name. The worker starts in the data dir; if its
   task edits CODE it must provision its OWN sandbox first (box if available, else
   git worktree) and cd in — say so in the prompt. Never edit code in the data dir.
@@ -476,7 +476,7 @@ EOF
   echo
   echo "=== WORKER SESSIONS (babysit; ⚑note = the worker is waiting for you) ==="
   babysit ls --json 2>/dev/null \
-    | jq -r '.[] | select(.id|startswith("loop-"))
+    | jq -r '.[] | select(.id|startswith("looop-"))
         | "- \(.id) [\(.state)" + (if .exit_code != null then " exit \(.exit_code)" else "" end) + "]"
           + (if .note then "  ⚑ \(.note)" else "" end)' \
     | grep . || echo "(none)"
@@ -492,8 +492,8 @@ tick() {
   TICK_ACTED=0
   ensure_dirs
 
-  if [ -f "$LOOP_DATA_DIR/paused" ]; then
-    log "paused ($LOOP_DATA_DIR/paused exists) — skipping"
+  if [ -f "$LOOOP_DATA_DIR/paused" ]; then
+    log "paused ($LOOOP_DATA_DIR/paused exists) — skipping"
     return 0
   fi
 
@@ -528,7 +528,7 @@ tick() {
   # 2. skip if the world is unchanged (cheap: no AI call)
   local hash
   hash="$(world_hash)"
-  if [ "$hash" = "$(cat "$LOOP_DATA_DIR/.last-tick-hash" 2>/dev/null || true)" ]; then
+  if [ "$hash" = "$(cat "$LOOOP_DATA_DIR/.last-tick-hash" 2>/dev/null || true)" ]; then
     log "${c_dim}world unchanged — nothing to decide; skipping (no AI call)${c_rst}"
     return 0
   fi
@@ -543,9 +543,9 @@ tick() {
   t0=$SECONDS
   log "${c_cyan}${c_b}deciding the one move${c_rst} — $runner is thinking ${c_dim}(model latency; its output follows)${c_rst}…"
   log "${c_dim}┌─ $runner ─────────────────────────────────────────${c_rst}"
-  if ( cd "$LOOP_DATA_DIR" && eval "$tick_cmd" < "$prompt" ) 2>&1 | tee "$LOOP_DATA_DIR/tick.log"; then
+  if ( cd "$LOOOP_DATA_DIR" && eval "$tick_cmd" < "$prompt" ) 2>&1 | tee "$LOOOP_DATA_DIR/tick.log"; then
     log "${c_dim}└────────────────────────────────────────────${c_rst}"
-    printf '%s\n' "$hash" > "$LOOP_DATA_DIR/.last-tick-hash"
+    printf '%s\n' "$hash" > "$LOOOP_DATA_DIR/.last-tick-hash"
     TICK_ACTED=1
     log "${c_grn}✓ tick done${c_rst} in $((SECONDS - t0))s ${c_dim}— journal: $(tail -1 "$JOURNAL" 2>/dev/null || echo '(no line)')${c_rst}"
   else
@@ -558,12 +558,12 @@ tick() {
 
 # ---- a single beat (debug / cron) -------------------------------------------
 # Runs exactly one tick and exits. Refuses if the pulse (or another one-shot)
-# holds a live lock, so it never double-acts against a running `loop run`.
+# holds a live lock, so it never double-acts against a running `looop run`.
 cmd_tick() {
   if [ -d "$LOCK" ]; then
     local oldpid; oldpid="$(cat "$LOCK/pid" 2>/dev/null || true)"
     if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null; then
-      echo "loop: pulse already running (pid $oldpid) — it ticks on its own" >&2
+      echo "looop: pulse already running (pid $oldpid) — it ticks on its own" >&2
       exit 1
     fi
   fi
@@ -574,34 +574,34 @@ cmd_tick() {
 cmd_run() {
   ensure_dirs
   # Idle backoff when a tick did nothing; prompt re-tick after it acted.
-  local INTERVAL="${LOOP_INTERVAL:-600}"
-  local BUSY_INTERVAL="${LOOP_BUSY_INTERVAL:-2}"
+  local INTERVAL="${LOOOP_INTERVAL:-600}"
+  local BUSY_INTERVAL="${LOOOP_BUSY_INTERVAL:-2}"
   # While any worker is in flight we re-observe on a SHORT cadence even when a
   # tick did nothing: workers exit / resolve threads / free a cap slot at any
   # moment, and the long idle backoff would leave us blind to that for minutes
   # (a freed slot or a newly-failing PR sits unhandled). The world_hash skip
   # still suppresses the AI call when nothing actually changed, so this only
   # costs cheap sensor re-runs — never idle AI spend.
-  local ACTIVE_INTERVAL="${LOOP_ACTIVE_INTERVAL:-60}"
+  local ACTIVE_INTERVAL="${LOOOP_ACTIVE_INTERVAL:-60}"
 
   # single-instance lock (mkdir-based; macOS has no flock)
   if ! mkdir "$LOCK" 2>/dev/null; then
     local oldpid; oldpid="$(cat "$LOCK/pid" 2>/dev/null || true)"
     if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null; then
-      echo "loop: already running (pid $oldpid)" >&2; exit 1
+      echo "looop: already running (pid $oldpid)" >&2; exit 1
     fi
     rm -rf "$LOCK" && mkdir "$LOCK"
   fi
   printf '%s\n' "$$" > "$LOCK/pid"
   trap 'rm -rf "$LOCK"' EXIT
 
-  log "${c_b}loop started${c_rst} ${c_dim}(idle ${INTERVAL}s / busy ${BUSY_INTERVAL}s, runner $(cfg '.default' 2>/dev/null || echo '?'))${c_rst}"
+  log "${c_b}looop started${c_rst} ${c_dim}(idle ${INTERVAL}s / busy ${BUSY_INTERVAL}s, runner $(cfg '.default' 2>/dev/null || echo '?'))${c_rst}"
   while true; do
     tick
     if [ "$TICK_ACTED" -eq 1 ]; then
       sleep "$BUSY_INTERVAL"        # acted: re-evaluate promptly
     elif babysit ls --json 2>/dev/null \
-         | jq -e '[.[] | select((.id|startswith("loop-")) and .alive==true)] | length > 0' >/dev/null 2>&1; then
+         | jq -e '[.[] | select((.id|startswith("looop-")) and .alive==true)] | length > 0' >/dev/null 2>&1; then
       sleep "$ACTIVE_INTERVAL"      # workers in flight: poll to fill freed slots
     else
       sleep "$INTERVAL"            # truly quiescent: back off, spare external APIs
@@ -610,7 +610,7 @@ cmd_run() {
 }
 
 # ---- manual one-shot: run a single goal NOW ---------------------------------
-# loop run <goal-id> — force ONE goal-focused move immediately. Unlike a normal
+# looop run <goal-id> — force ONE goal-focused move immediately. Unlike a normal
 # tick this bypasses the priority order AND the world-unchanged skip, and it does
 # NOT refuse while the pulse is running (explicit human override; start-session
 # still guards against double-spawning a live worker). <goal-id> must exist in
@@ -621,7 +621,7 @@ cmd_run_goal() {
   local gf="$GOALS_DIR/$id.md"
   [ -f "$gf" ] || gf="$GOALS_DIR/archive/$id.md"
   if [ ! -f "$gf" ]; then
-    echo "loop run: no such goal '$id' (looked in goals/ and goals/archive/)" >&2
+    echo "looop run: no such goal '$id' (looked in goals/ and goals/archive/)" >&2
     echo "available goals:" >&2
     # shellcheck disable=SC2012  # display-only listing; glob handles filenames
     ( cd "$GOALS_DIR" 2>/dev/null && ls ./*.md 2>/dev/null | sed 's#\.md$##;s#^\./#  #' ) >&2
@@ -655,7 +655,7 @@ cmd_run_goal() {
   t0=$SECONDS
   log "${c_cyan}${c_b}manual run — goal '$id'${c_rst} ${c_dim}($runner is thinking; its output follows)${c_rst}…"
   log "${c_dim}┌─ $runner ──────────────────────────────────────${c_rst}"
-  ( cd "$LOOP_DATA_DIR" && eval "$tick_cmd" < "$prompt" ) 2>&1 | tee "$LOOP_DATA_DIR/tick.log"
+  ( cd "$LOOOP_DATA_DIR" && eval "$tick_cmd" < "$prompt" ) 2>&1 | tee "$LOOOP_DATA_DIR/tick.log"
   log "${c_dim}└────────────────────────────────────────${c_rst}"
   log "${c_grn}✓ run done${c_rst} in $((SECONDS - t0))s ${c_dim}— journal: $(tail -1 "$JOURNAL" 2>/dev/null || echo '(no line)')${c_rst}"
   rm -f "$prompt"
@@ -663,21 +663,21 @@ cmd_run_goal() {
 }
 
 # ---- start a worker session --------------------------------------------------
-# loop start-session <id> "<prompt>" [runner]
+# looop start-session <id> "<prompt>" [runner]
 # The pulse only LAUNCHES the agent (in the data dir) — it does NOT provision a
 # workspace. If a task touches code, the worker creates its OWN sandbox first
 # (box if available, else git worktree), per the PLAYBOOK. Judgment is the AI's;
 # the shell just starts it.
 cmd_start_session() {
   ensure_dirs
-  local id="${1:?usage: loop start-session <id> <prompt> [runner]}"
+  local id="${1:?usage: looop start-session <id> <prompt> [runner]}"
   local prompt="${2:?missing prompt}"
   local runner="${3:-$(cfg '.default')}"
 
   local tmpl; tmpl="$(jq -r --arg r "$runner" '.runners[$r].interactive // empty' "$CONFIG")"
   [ -n "$tmpl" ] || { echo "start-session: unknown runner '$runner'" >&2; exit 1; }
 
-  local session="loop-$id"
+  local session="looop-$id"
   if babysit status -s "$session" >/dev/null 2>&1; then
     # A session with this id exists. Only block if it's still ALIVE; a dead
     # (exited/killed) corpse just holds the id — prune it and reuse the id, so
@@ -692,7 +692,7 @@ cmd_start_session() {
   # Every worker gets the same contract prepended so the pulse can't forget it:
   # workers NEVER notify; when they need a human they raise a babysit flag and
   # wait. The pulse turns that flag into a tmux window the human can't miss.
-  local prompt_file="$LOOP_DATA_DIR/prompts/$session.md"
+  local prompt_file="$LOOOP_DATA_DIR/prompts/$session.md"
   cat > "$prompt_file" <<EOF
 # ⚑ WORKER CONTRACT (auto-injected — must obey)
 - Never send notifications (no terminal-notifier or any OS notification). You are
@@ -712,7 +712,7 @@ cmd_start_session() {
   (PLAYBOOK / goals / sensors). If your task touches a code repo, provision your
   OWN sandbox FIRST and cd into it — never edit code in the data dir:
     • if \`box\` is available:  box new $session --repo <repo> && cd "\$(box switch $session)"
-    • otherwise (git):         git -C <local-clone> worktree add /tmp/$session -b loop/$session && cd /tmp/$session
+    • otherwise (git):         git -C <local-clone> worktree add /tmp/$session -b looop/$session && cd /tmp/$session
   (the PLAYBOOK names the repos and which to prefer.)
 
 ---
@@ -723,10 +723,10 @@ EOF
   # The pulse always launches the agent in the data dir. Provisioning a code
   # sandbox (box / git worktree) is the WORKER's job, driven by the PLAYBOOK —
   # the shell does not think about repos.
-  local workspace="$LOOP_DATA_DIR"
+  local workspace="$LOOOP_DATA_DIR"
 
   # Run the agent in the workspace under babysit, detached. bash -lc gives the
-  # template shell semantics (e.g. the "$(cat prompt_file)" in loop.json).
+  # template shell semantics (e.g. the "$(cat prompt_file)" in looop.json).
   # FULLY detach the worker's std fds (</dev/null >/dev/null 2>&1): otherwise the
   # daemonized worker inherits and holds the caller's stdout/stderr pipe, so a
   # tick that spawns a worker can't finish until the worker exits — which would
@@ -739,32 +739,32 @@ EOF
 
 usage() {
   cat <<EOF
-loop — personal operations loop
+looop — personal operations loop
 
 Usage:
-  loop                          run the pulse (foreground; Ctrl-C to stop)
-  loop run <goal-id>            run ONE goal NOW (manual override): a forced,
+  looop                          run the pulse (foreground; Ctrl-C to stop)
+  looop run <goal-id>            run ONE goal NOW (manual override): a forced,
                                 goal-focused move, ignoring priority order and
                                 the world-unchanged skip; works while the pulse
                                 runs. <goal-id> = goals/<id>.md basename.
-                                e.g. loop run setup ; loop run morning-standup
-  loop tick                     run a single beat and exit (debug / cron)
-  loop start-session <id> "<prompt>" [runner]
+                                e.g. looop run setup ; looop run morning-standup
+  looop tick                     run a single beat and exit (debug / cron)
+  looop start-session <id> "<prompt>" [runner]
                                 start a worker session (used by the tick AI)
-  loop version                  print the loop version
-  loop help                     show this help
+  looop version                  print the looop version
+  looop help                     show this help
 
-Paths (override via env LOOP_CONFIG / LOOP_DATA_DIR):
+Paths (override via env LOOOP_CONFIG / LOOOP_DATA_DIR):
   config  $CONFIG
-  data    $LOOP_DATA_DIR
+  data    $LOOOP_DATA_DIR
 
 Worker sessions are managed by external tools:
   babysit ls                    list worker sessions (⚑ = waiting for you)
-  babysit attach -s loop-<id>   enter a waiting session and talk to it
+  babysit attach -s looop-<id>   enter a waiting session and talk to it
 
 The pulse launches each worker in the data dir; if a worker needs to touch code
 it provisions its OWN sandbox (box if available, else git worktree), as told by
-the PLAYBOOK. loop itself has no notion of repos.
+the PLAYBOOK. looop itself has no notion of repos.
 
 Fix judgment by editing PLAYBOOK.md (in the data dir) and committing — it takes
 effect next tick. Drop a file at \$data/paused to pause the loop.
@@ -778,7 +778,7 @@ case "$cmd" in
   tick)            require_deps; cmd_tick ;;
   _fmt)            cmd_fmt ;;
   start-session)   require_deps; shift; cmd_start_session "$@" ;;
-  version|--version|-V) echo "loop $LOOP_VERSION" ;;
+  version|--version|-V) echo "looop $LOOOP_VERSION" ;;
   help|-h|--help)  usage ;;
-  *) echo "loop: unknown command '$cmd' (try: run, run <goal>, tick, start-session, help)" >&2; exit 1 ;;
+  *) echo "looop: unknown command '$cmd' (try: run, run <goal>, tick, start-session, help)" >&2; exit 1 ;;
 esac

@@ -1,5 +1,5 @@
 {
-  description = "loop — a tiny, portable, Kubernetes-shaped control loop for your work";
+  description = "looop — a tiny, portable, Kubernetes-shaped control loop for your work";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -11,8 +11,8 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
-        loop = pkgs.stdenvNoCC.mkDerivation {
-          pname = "loop";
+        looop = pkgs.stdenvNoCC.mkDerivation {
+          pname = "looop";
           version = "0.2.0";
           src = ./.;
 
@@ -23,28 +23,28 @@
 
           installPhase = ''
             runHook preInstall
-            install -Dm755 loop "$out/bin/loop"
-            wrapProgram "$out/bin/loop" \
+            install -Dm755 looop "$out/bin/looop"
+            wrapProgram "$out/bin/looop" \
               --prefix PATH : ${pkgs.lib.makeBinPath (with pkgs; [ bash coreutils git jq ])}
             runHook postInstall
           '';
 
           meta = with pkgs.lib; {
             description = "A tiny, portable, Kubernetes-shaped control loop for your work";
-            homepage = "https://github.com/yusukeshib/loop";
+            homepage = "https://github.com/yusukeshib/looop";
             license = licenses.mit;
-            mainProgram = "loop";
+            mainProgram = "looop";
             platforms = platforms.unix;
           };
         };
       in
       {
-        packages.default = loop;
-        packages.loop = loop;
+        packages.default = looop;
+        packages.looop = looop;
 
         apps.default = {
           type = "app";
-          program = "${loop}/bin/loop";
+          program = "${looop}/bin/looop";
         };
 
         devShells.default = pkgs.mkShell {
