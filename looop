@@ -95,7 +95,7 @@
 set -euo pipefail
 shopt -s nullglob
 
-LOOOP_VERSION="0.4.0"
+LOOOP_VERSION="0.5.0"
 
 # ---- paths -------------------------------------------------------------------
 self="${BASH_SOURCE[0]}"
@@ -119,6 +119,10 @@ REPORTS_DIR="$LOOOP_DATA_DIR/reports"            # worker deliverables a human r
                                                  # PERSISTENT: the pulse never wipes this (unlike snapshots/),
                                                  # so a report survives across ticks until the human acts on it.
 export REPORTS_DIR
+COST_LEDGER="$LOOOP_DATA_DIR/cost.jsonl"          # append-only LLM cost ledger: one JSON line per AI call
+                                                 # ({ts,kind,id,runner,cost_usd}). Host-local accounting
+                                                 # (gitignored). Read it with `looop cost`.
+export COST_LEDGER
 
 # ---- colors (respect a tty + $NO_COLOR; $LOOOP_COLOR is inherited by `looop _fmt`)
 if [ -n "${LOOOP_COLOR:-}" ]; then :; elif [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then LOOOP_COLOR=1; else LOOOP_COLOR=0; fi
@@ -203,6 +207,7 @@ reports/
 .tmux-surfaced
 attention.md
 tick.log
+cost.jsonl
 paused
 # worker scratch that can land in the data dir
 .ruff_cache/
@@ -215,12 +220,58 @@ GI
 
 cfg() { jq -r "$1" "$CONFIG"; }
 
+# ---- LLM cost accounting -----------------------------------------------------
+# Every AI call goes through one of two seams: the tick/goal runner (metered in
+# `cost_sink`, fed the raw `pi --mode json` stream by `_fmt`) and worker sessions
+# (which can record their own spend via `looop _cost`). Both land here. The
+# ledger is append-only JSONL; one short line per call is a single atomic write
+# (well under PIPE_BUF), so concurrent workers + the pulse never tear a line —
+# no flock needed (and macOS has none by default).
+record_cost() {  # kind id runner cost_usd
+  local kind="${1:-}" id="${2:-}" runner="${3:-}" cost="${4:-}"
+  [ -n "$cost" ] || return 0
+  # ignore non-positive / unparseable amounts (world-unchanged ticks, runners
+  # that emit no usage data, etc.) so the ledger only holds real spend.
+  awk "BEGIN{c=$cost+0; exit !(c>0)}" >/dev/null 2>&1 || return 0
+  local line
+  line=$(jq -cn --arg ts "$(date -u +%FT%TZ)" --arg kind "$kind" \
+      --arg id "$id" --arg runner "$runner" --argjson cost "$cost" \
+      '{ts:$ts,kind:$kind,id:$id,runner:$runner,cost_usd:$cost}' 2>/dev/null) || return 0
+  printf '%s\n' "$line" >> "$COST_LEDGER" 2>/dev/null || true
+}
+
+# Sum per-message USD from a raw `pi --mode json` NDJSON stream on stdin and
+# append one ledger line. Driven from inside `_fmt` (see below) so it needs no
+# config change — any runner that pipes through `_fmt` is metered for free.
+# kind/id/runner arrive via env so the stream filter stays format-agnostic.
+cost_sink() {
+  local total
+  total=$(jq -Rr '
+    (try fromjson catch null)
+    | select(type=="object" and .type=="message_end")
+    | (.usage.cost.total // 0)
+  ' 2>/dev/null | awk '{s+=$1} END{printf "%.6f", s+0}') || total=0
+  record_cost "${LOOOP_COST_KIND:-tick}" "${LOOOP_COST_ID:-}" "${LOOOP_COST_RUNNER:-}" "$total"
+}
+
 # ---- progressive output formatter (internal: `looop _fmt`) --------------------
 # Reads a `pi --mode json` NDJSON event stream on stdin and prints friendly,
 # line-buffered progress as it happens: one line per tool call (so you see what
 # is executing live), error markers, and the assistant's narrative as each turn
 # ends. Non-JSON lines (errors, stray output) pass through unchanged.
 cmd_fmt() {
+  # When a tick/goal sets the cost env, tee the raw NDJSON: one copy meters cost
+  # into the ledger, the other drives the live display. tee duplicates the stream
+  # so neither branch starves the other; metering is best-effort and never fails
+  # the pipeline (cost_sink swallows its own errors).
+  if [ -n "${LOOOP_COST_KIND:-}" ]; then
+    tee >(cost_sink) | fmt_display
+  else
+    fmt_display
+  fi
+}
+
+fmt_display() {
   # We color only what we generate (tool-call lines); the assistant's freeform
   # prose is printed plain. pi emits raw JSON (no ANSI), so nothing competes.
   jq -Rr --unbuffered \
@@ -586,6 +637,7 @@ tick() {
   t0=$SECONDS
   log "${c_cyan}${c_b}deciding the one move${c_rst} — $runner is thinking ${c_dim}(model latency; its output follows)${c_rst}…"
   log "${c_dim}┌─ $runner ─────────────────────────────────────────${c_rst}"
+  export LOOOP_COST_KIND=tick LOOOP_COST_RUNNER="$runner" LOOOP_COST_ID="tick-$(date +%Y%m%d-%H%M%S)"
   if ( cd "$LOOOP_DATA_DIR" && eval "$tick_cmd" < "$prompt" ) 2>&1 | tee "$LOOOP_DATA_DIR/tick.log"; then
     log "${c_dim}└────────────────────────────────────────────${c_rst}"
     printf '%s\n' "$hash" > "$LOOOP_DATA_DIR/.last-tick-hash"
@@ -699,6 +751,7 @@ cmd_run_goal() {
   t0=$SECONDS
   log "${c_cyan}${c_b}manual run — goal '$id'${c_rst} ${c_dim}($runner is thinking; its output follows)${c_rst}…"
   log "${c_dim}┌─ $runner ──────────────────────────────────────${c_rst}"
+  export LOOOP_COST_KIND=goal LOOOP_COST_RUNNER="$runner" LOOOP_COST_ID="$id"
   ( cd "$LOOOP_DATA_DIR" && eval "$tick_cmd" < "$prompt" ) 2>&1 | tee "$LOOOP_DATA_DIR/tick.log"
   log "${c_dim}└────────────────────────────────────────${c_rst}"
   log "${c_grn}✓ run done${c_rst} in $((SECONDS - t0))s ${c_dim}— journal: $(tail -1 "$JOURNAL" 2>/dev/null || echo '(no line)')${c_rst}"
@@ -766,6 +819,12 @@ cmd_start_session() {
     • if \`box\` is available:  box new $session --repo <repo> && cd "\$(box switch $session)"
     • otherwise (git):         git -C <local-clone> worktree add /tmp/$session -b looop/$session && cd /tmp/$session
   (the PLAYBOOK names the repos and which to prefer.)
+- COST: when you end your session (right before \`babysit kill\`), record this
+  session's total LLM spend so the human can see it in \`looop cost\`. If you can
+  determine your own USD cost for this run, log it:
+    "\$LOOOP_BIN" _cost session $id $runner <usd>
+  (e.g. "\$LOOOP_BIN" _cost session $id $runner 0.42). Skip only if you truly
+  cannot determine the amount.
 - DELIVERABLES: write any report / artifact a human will read into the data dir's
   reports/ folder (e.g. reports/<id>.md). That dir PERSISTS across ticks. NEVER
   write deliverables to snapshots/ — the pulse wipes snapshots/ on EVERY beat, so
@@ -794,6 +853,38 @@ EOF
   echo "  watch: babysit attach -s $session"
 }
 
+# ---- cost report (looop cost) ------------------------------------------------
+# Read-only view over the append-only ledger. `looop cost` = all time; add
+# `today` to scope to the current UTC day, or `--json` for the raw rows.
+cmd_cost() {
+  local ledger="$COST_LEDGER" mode="${1:-all}"
+  if [ ! -f "$ledger" ]; then
+    echo "looop: no LLM cost recorded yet."
+    echo "  ledger: $ledger  (written as the pulse/goals run; see 'looop help')"
+    return 0
+  fi
+  if [ "$mode" = "--json" ]; then jq -s '.' "$ledger"; return 0; fi
+  local today=""
+  case "$mode" in
+    all) : ;;
+    today) today="$(date -u +%F)" ;;
+    *) echo "usage: looop cost [today|all|--json]" >&2; return 1 ;;
+  esac
+  jq -rs --arg today "$today" '
+    def usd: "$" + (((.*10000|round)/10000)|tostring);
+    [ .[] | select(type=="object") | select($today=="" or ((.ts // "")|startswith($today))) ] as $r
+    | ($r|map(.cost_usd // 0)|add // 0) as $t
+    | "looop cost \u2014 \(if $today=="" then "all time" else "today ("+$today+" UTC)" end)",
+      "  total: \($t|usd)  (\($r|length) calls)"
+    + (if ($r|length)>0 then
+        "\n  by kind:"
+        + ($r|group_by(.kind)|map("\n    \(.[0].kind // "?"): \((map(.cost_usd // 0)|add)|usd)")|add)
+        + "\n  by runner:"
+        + ($r|group_by(.runner)|map("\n    \(.[0].runner // "?"): \((map(.cost_usd // 0)|add)|usd)")|add)
+      else "" end)
+  ' "$ledger"
+}
+
 usage() {
   cat <<EOF
 looop — personal operations loop
@@ -808,6 +899,10 @@ Usage:
   looop tick                     run a single beat and exit (debug / cron)
   looop start-session <id> "<prompt>" [runner]
                                 start a worker session (used by the tick AI)
+  looop cost [today|all|--json]   report LLM spend recorded in the cost ledger
+                                (ticks + manual goal runs are metered
+                                automatically; workers self-report via
+                                'looop _cost')
   looop version                  print the looop version
   looop help                     show this help
 
@@ -834,6 +929,8 @@ case "$cmd" in
                    if [ -n "${1:-}" ]; then cmd_run_goal "$1"; else cmd_run; fi ;;
   tick)            require_deps; cmd_tick ;;
   _fmt)            cmd_fmt ;;
+  cost)            shift 2>/dev/null || true; cmd_cost "$@" ;;
+  _cost)           shift; record_cost "$@" ;;   # internal: workers/scripts record one call
   start-session)   require_deps; shift; cmd_start_session "$@" ;;
   version|--version|-V) echo "looop $LOOOP_VERSION" ;;
   help|-h|--help)  usage ;;
