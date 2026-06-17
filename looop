@@ -136,6 +136,17 @@ fi
 
 log() { printf '%s[%s]%s %s\n' "$c_dim" "$(date '+%H:%M:%S')" "$c_rst" "$*"; }
 
+# Prefix each line of a streamed sub-process (the runner's output) with the same
+# dim [HH:MM:SS] stamp log() uses, so the AI's narrative lines up under the
+# pulse's own logs. Blank lines stay blank (no lonely timestamp).
+ts_prefix() {
+  local line
+  while IFS= read -r line; do
+    if [ -z "$line" ]; then printf '\n'
+    else printf '%s[%s]%s %s\n' "$c_dim" "$(date '+%H:%M:%S')" "$c_rst" "$line"; fi
+  done
+}
+
 # ---- dependency preflight ----------------------------------------------------
 # looop is only glue: it orchestrates external tools. If any required command is
 # missing, fail fast with install instructions and exit 1 (RULE: the pulse must
@@ -638,7 +649,7 @@ tick() {
   log "${c_cyan}${c_b}deciding the one move${c_rst} — $runner is thinking ${c_dim}(model latency; its output follows)${c_rst}…"
   log "${c_dim}┌─ $runner ─────────────────────────────────────────${c_rst}"
   export LOOOP_COST_KIND=tick LOOOP_COST_RUNNER="$runner" LOOOP_COST_ID="tick-$(date +%Y%m%d-%H%M%S)"
-  if ( cd "$LOOOP_DATA_DIR" && eval "$tick_cmd" < "$prompt" ) 2>&1 | tee "$LOOOP_DATA_DIR/tick.log"; then
+  if ( cd "$LOOOP_DATA_DIR" && eval "$tick_cmd" < "$prompt" ) 2>&1 | ts_prefix | tee "$LOOOP_DATA_DIR/tick.log"; then
     log "${c_dim}└────────────────────────────────────────────${c_rst}"
     printf '%s\n' "$hash" > "$LOOOP_DATA_DIR/.last-tick-hash"
     TICK_ACTED=1
@@ -752,7 +763,7 @@ cmd_run_goal() {
   log "${c_cyan}${c_b}manual run — goal '$id'${c_rst} ${c_dim}($runner is thinking; its output follows)${c_rst}…"
   log "${c_dim}┌─ $runner ──────────────────────────────────────${c_rst}"
   export LOOOP_COST_KIND=goal LOOOP_COST_RUNNER="$runner" LOOOP_COST_ID="$id"
-  ( cd "$LOOOP_DATA_DIR" && eval "$tick_cmd" < "$prompt" ) 2>&1 | tee "$LOOOP_DATA_DIR/tick.log"
+  ( cd "$LOOOP_DATA_DIR" && eval "$tick_cmd" < "$prompt" ) 2>&1 | ts_prefix | tee "$LOOOP_DATA_DIR/tick.log"
   log "${c_dim}└────────────────────────────────────────${c_rst}"
   log "${c_grn}✓ run done${c_rst} in $((SECONDS - t0))s ${c_dim}— journal: $(tail -1 "$JOURNAL" 2>/dev/null || echo '(no line)')${c_rst}"
   rm -f "$prompt"
