@@ -680,8 +680,8 @@ cmd_tick() {
 cmd_run() {
   ensure_dirs
   # Idle backoff when a tick did nothing; prompt re-tick after it acted.
-  local INTERVAL="${LOOOP_INTERVAL:-600}"
-  local BUSY_INTERVAL="${LOOOP_BUSY_INTERVAL:-2}"
+  local INTERVAL="${LOOOP_INTERVAL:-60}"
+  local BUSY_INTERVAL="${LOOOP_BUSY_INTERVAL:-60}"
   # While any worker is in flight we re-observe on a SHORT cadence even when a
   # tick did nothing: workers exit / resolve threads / free a cap slot at any
   # moment, and the long idle backoff would leave us blind to that for minutes
@@ -689,6 +689,8 @@ cmd_run() {
   # still suppresses the AI call when nothing actually changed, so this only
   # costs cheap sensor re-runs — never idle AI spend.
   local ACTIVE_INTERVAL="${LOOOP_ACTIVE_INTERVAL:-60}"
+  # Default cadence is a flat 60s in every state (acted / workers-in-flight /
+  # quiescent). Override any of the three env vars to restore a tiered rhythm.
 
   # single-instance lock (mkdir-based; macOS has no flock)
   if ! mkdir "$LOCK" 2>/dev/null; then
