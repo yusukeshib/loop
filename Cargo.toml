@@ -22,9 +22,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # default-features = false drops the `upgrade` feature (self_update), keeping
 # the network stack out of looop.
 babysit = { version = "0.10", default-features = false }
-# `attach` needs the IO + time drivers (control socket + PTY) and signal
-# handling at runtime; list/prune only need `rt`.
-tokio = { version = "1", features = ["rt", "net", "time", "io-util", "signal"] }
+# looop drives babysit's async API in-process, including the detached worker
+# supervisor (serve_worker), which babysit runs under a multi-thread runtime
+# (`#[tokio::main]`). Match that so the in-process worker behaves identically.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time", "io-util", "signal"] }
 
 [profile.release]
 strip = true

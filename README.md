@@ -84,7 +84,7 @@ looop cost [today|--json]   report LLM spend from the cost ledger
 looop version | help
 ```
 
-To talk to a waiting worker: `looop attach <id>` (or `babysit attach -s looop-<id>`).
+To talk to a waiting worker: `looop attach <id>`.
 To pause the loop: drop a file at `$data/paused`. To change judgment: edit
 `PLAYBOOK.md` — it takes effect next tick.
 
@@ -133,10 +133,11 @@ looop version   # -> looop 0.12.0
 looop help
 ```
 
-Runtime deps: `git`, the `babysit` binary (only for detached worker spawn — the
-worker fleet is otherwise driven in-process via the babysit library), and an LLM
-runner (`pi` or `claude`). (Workers that touch code also need `git` or `box` to
-sandbox themselves, but that's a worker concern, not a prerequisite for the pulse.)
+Runtime deps: just an LLM runner (`pi` or `claude`). The worker fleet (babysit)
+is linked as a **library** and driven entirely in-process — spawn, list, attach,
+kill, flag, prune all run inside `looop`, so **no `babysit` binary is required**.
+(Workers that touch code also need `git` or `box` to sandbox themselves, but
+that's a worker concern, not a prerequisite for the pulse.)
 
 ## Config & data
 

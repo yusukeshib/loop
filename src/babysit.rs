@@ -1,13 +1,16 @@
 //! Wrapper over the `babysit` worker fleet.
 //!
-//! Step 3+4: every data + control path that CAN run in-process now does. `list`,
-//! `prune`, `status_exists`, `kill`, `flag`, `unflag` and `attach` call the
-//! babysit LIBRARY directly (no subprocess, no JSON re-parse). The ONE verb that
-//! must still shell out is detached spawn (`start-session` → `babysit run -d`):
-//! babysit's detacher re-execs `std::env::current_exe()` as the supervisor, which
-//! in-process would be `looop` (it has no `run --detached-id`), so the real
-//! `babysit` binary must own that fork. The leading `::babysit` disambiguates the
-//! extern crate from this same-named module.
+//! Step 4 (complete): looop is a SINGLE self-contained binary — the `babysit`
+//! executable is no longer required at runtime. Every data + control path runs
+//! against the babysit LIBRARY in-process: `list`/`ls`, `prune`, `status_exists`,
+//! `kill`, `flag`, `unflag`, `attach`, AND detached worker spawn.
+//!
+//! Detached spawn is the subtle one: babysit's detacher re-execs
+//! `std::env::current_exe()` (here = `looop`) as the headless supervisor with a
+//! hidden `run --detached-id <id>` form. looop handles that form itself
+//! (`run_detached_worker`) and hands it straight to babysit's `serve_worker`, so
+//! the worker is owned by a looop process — no `babysit` binary in the loop.
+//! The leading `::babysit` disambiguates the extern crate from this module.
 
 use serde::Deserialize;
 use std::sync::OnceLock;
@@ -17,10 +20,11 @@ use std::sync::OnceLock;
 fn rt() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
-        // enable_all: `attach` drives a control socket + PTY (needs the IO and
-        // time drivers). The list/prune paths only touch the filesystem, but a
-        // single shared runtime keeps the async boundary in one place.
-        tokio::runtime::Builder::new_current_thread()
+        // Multi-thread + enable_all to match babysit's own `#[tokio::main]`:
+        // the detached worker (serve_worker) owns a PTY read loop + a control
+        // socket accept loop concurrently, and `attach` drives a socket + PTY.
+        // The light paths (list/prune/flag) are happy here too.
+        tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .expect("looop: failed to build tokio runtime")
@@ -144,6 +148,113 @@ pub fn unflag(session: &str) -> anyhow::Result<()> {
 /// `looop attach <id>` — attach the terminal to a session; returns its exit code.
 pub fn attach(session: &str) -> anyhow::Result<i32> {
     rt().block_on(::babysit::attach::attach(Some(session.to_string())))
+}
+
+/// `looop ls [--json] [--watch] [--interval <dur>]` — render the fleet table
+/// IN-PROCESS via babysit's own list renderer (this is the printing CLI path,
+/// so its stdout is exactly what we want). `--watch` refreshes in place, just
+/// like `babysit ls --watch`, because the loop lives in the library.
+pub fn ls(json: bool, watch: bool, interval: String) -> anyhow::Result<()> {
+    rt().block_on(::babysit::sub::list(json, watch, interval))
+}
+
+/// Spawn a detached worker IN-PROCESS (no `babysit` binary). babysit's parent
+/// path picks the id, then re-execs `current_exe()` (= looop) as the headless
+/// supervisor — looop routes that back into `serve_worker` via
+/// `run_detached_worker`. babysit prints a start banner on the parent path; we
+/// suppress it so looop owns its own "started …" output.
+pub fn spawn_detached(cmd: Vec<String>, session: &str) -> anyhow::Result<()> {
+    suppress_stdout(|| {
+        rt().block_on(::babysit::run::run(
+            cmd,
+            Some(session.to_string()),
+            true,  // detach: spawn the worker and return immediately
+            None,  // detached_id: we are the parent, not the worker
+            false, // no_tty
+            None,  // timeout
+            None,  // idle_timeout
+            None,  // size
+            true,  // json (one suppressed line; we print our own message)
+        ))
+    })
+    .map(|_code| ())
+}
+
+/// The worker side of detached spawn: looop was re-exec'd by babysit's detacher
+/// as `looop run --detached-id <id> [--no-tty] [--timeout <ms>] [--idle-timeout
+/// <ms>] [--size <CxR>] -- <cmd…>`. Parse that argv (babysit's own format, pinned
+/// by the `^0.10` dep) and hand off to the library's headless supervisor, which
+/// blocks until the wrapped command exits.
+pub fn run_detached_worker(args: &[String]) -> anyhow::Result<i32> {
+    use anyhow::Context;
+    let mut id = None;
+    let mut no_tty = false;
+    let mut timeout = None;
+    let mut idle_timeout = None;
+    let mut size = None;
+    let mut cmd: Vec<String> = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--detached-id" => id = it.next().cloned(),
+            "--no-tty" => no_tty = true,
+            "--timeout" => timeout = it.next().cloned(),
+            "--idle-timeout" => idle_timeout = it.next().cloned(),
+            "--size" => size = it.next().cloned(),
+            "--" => {
+                cmd = it.by_ref().cloned().collect();
+                break;
+            }
+            _ => {} // ignore unknown flags (forward-compat with babysit)
+        }
+    }
+    let id = id.context("looop run --detached-id: missing worker id")?;
+    rt().block_on(::babysit::run::run(
+        cmd,
+        None,
+        false,
+        Some(id),
+        no_tty,
+        timeout,
+        idle_timeout,
+        size,
+        false,
+    ))
+}
+
+/// Run `f` with this process's stdout (fd 1) redirected to /dev/null, then
+/// restore it. Used to swallow babysit's parent-path banner while keeping
+/// looop's own output. Unix-only; a no-op redirect failure just runs `f`.
+#[cfg(unix)]
+fn suppress_stdout<T>(f: impl FnOnce() -> T) -> T {
+    use std::io::Write;
+    use std::os::unix::io::AsRawFd;
+    unsafe extern "C" {
+        fn dup(fd: i32) -> i32;
+        fn dup2(a: i32, b: i32) -> i32;
+        fn close(fd: i32) -> i32;
+    }
+    let Ok(devnull) = std::fs::OpenOptions::new().write(true).open("/dev/null") else {
+        return f();
+    };
+    let _ = std::io::stdout().flush();
+    unsafe {
+        let saved = dup(1);
+        if saved < 0 {
+            return f();
+        }
+        dup2(devnull.as_raw_fd(), 1);
+        let out = f();
+        let _ = std::io::stdout().flush();
+        dup2(saved, 1);
+        close(saved);
+        out
+    }
+}
+
+#[cfg(not(unix))]
+fn suppress_stdout<T>(f: impl FnOnce() -> T) -> T {
+    f()
 }
 
 /// Is a session currently alive?

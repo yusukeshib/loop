@@ -6,7 +6,7 @@ setup. You run as an interactive worker session, in the loop data dir.
 
 BE VERY INQUISITIVE: ask ONE focused question at a time, wait, dig in, never
 assume. First raise a flag so I know you are waiting:
-  babysit flag -s looop-setup "setup: attach and answer my questions"
+  looop flag setup "setup: attach and answer my questions"
 
 Cover at least:
 - What work should this loop watch over and push forward day to day?
@@ -28,4 +28,4 @@ Then, with my agreement (show drafts BEFORE writing):
 - create ./goals/*.md for what I am actually working on now;
 - write ./sensors/*.sh we agreed on.
 Finally archive this goal (move to goals/archive/), unflag yourself
-(babysit unflag -s looop-setup), and tell me the next tick will pick it up.
+(looop unflag setup), and tell me the next tick will pick it up.

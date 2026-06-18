@@ -2,8 +2,10 @@
 //!
 //! looop is glue: it orchestrates external tools. If a required command is
 //! missing, fail fast with install instructions. Unlike the bash version, the
-//! Rust port no longer needs `jq` (JSON is handled in-process by serde_json),
-//! so the hard prerequisites are: `babysit` + the configured tick runner.
+//! Rust port needs neither `jq` (JSON is handled in-process by serde_json) nor
+//! the `babysit` binary (babysit is linked as a library and the whole worker
+//! fleet — spawn / list / attach / kill / flag / prune — runs in-process). The
+//! single hard prerequisite is the configured tick runner (pi/claude).
 
 use crate::config::Config;
 use crate::paths::Paths;
@@ -11,7 +13,6 @@ use anyhow::{Result, bail};
 
 fn dep_hint(cmd: &str) -> &'static str {
     match cmd {
-        "babysit" => "cargo install babysit   (or: nix profile install github:yusukeshib/babysit)",
         "pi" => "see https://github.com/earendil-works/pi  (the default tick runner)",
         "claude" => "see https://docs.claude.com/claude-code",
         _ => "see the tool's docs",
@@ -46,10 +47,6 @@ fn is_executable(_p: &std::path::Path) -> bool {
 /// missing at once (so the user fixes it in one pass).
 pub fn require_deps(paths: &Paths) -> Result<()> {
     let mut missing: Vec<(String, &'static str)> = Vec::new();
-
-    if !on_path("babysit") {
-        missing.push(("babysit".into(), dep_hint("babysit")));
-    }
 
     // The tick itself shells out to the configured runner (pi/claude), so a
     // missing runner binary is a hard prereq too. Resolve from $LOOOP_CONFIG

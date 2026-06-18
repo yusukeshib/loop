@@ -11,7 +11,6 @@ const MANUAL: &str = include_str!("manual.txt");
 
 pub fn print(paths: &Paths) {
     print!("{MANUAL}");
-    let bs = paths.bs_hint_env();
     println!(
         r#"
 Usage:
@@ -25,9 +24,9 @@ Usage:
   looop status [--json]          structured snapshot of the loop's live state
                                 (pulse, last tick, workers, proposals, cost) —
                                 for an external observer / AI watching the loop
-  looop ls [babysit ls opts]     list this profile's worker sessions (⚑ = waiting);
-                                opts pass through to babysit ls, e.g.
-                                looop ls --watch [--interval 2s]  (live, Ctrl-C to stop)
+  looop ls [--json] [--watch] [--interval <dur>]
+                                list this profile's worker sessions (⚑ = waiting),
+                                in-process; --watch refreshes live (Ctrl-C to stop)
   looop start-session <id> "<prompt>" [runner]
                                 start a worker session (used by the tick AI)
   looop attach <id>              attach your terminal to a worker (in-process;
@@ -35,6 +34,8 @@ Usage:
   looop kill <id>                terminate a worker session
   looop flag <id> [message]      raise a worker's attention flag
   looop unflag <id>              clear a worker's attention flag
+  looop prune                    clear finished worker corpses (the pulse also
+                                does this every tick)
   looop cost [today|all|--json]   report LLM spend recorded in the cost ledger
                                 (ticks + manual goal runs are metered
                                 automatically; workers self-report via
@@ -53,12 +54,13 @@ Paths (override via env LOOOP_CONFIG / LOOOP_DATA_DIR):
   config  {config}
   data    {data}
 
-Worker sessions are managed by external tools (looop scopes BABYSIT_DIR to this
-profile automatically; use 'looop ls' to skip the BABYSIT_DIR= prefix):
+looop is a single self-contained binary: the worker fleet (babysit) is linked
+as a LIBRARY and driven entirely in-process — no `babysit` executable required.
+looop scopes the fleet to this profile automatically.
   looop ls                      list worker sessions (⚑ = waiting for you)
-  looop ls --watch              watch the fleet live (= babysit ls --watch)
+  looop ls --watch              watch the fleet live, in place
   looop attach <id>             enter a waiting session and talk to it
-  {bs}babysit attach -s looop-<id>   (equivalent, via the babysit binary)
+  looop kill <id>               end a session ; looop flag/unflag <id> ; looop prune
 
 The pulse launches each worker in the data dir; if a worker needs to touch code
 it provisions its OWN sandbox (box if available, else git worktree), as told by
@@ -68,6 +70,5 @@ Fix judgment by editing PLAYBOOK.md (in the data dir) and committing — it take
 effect next tick. Drop a file at $data/paused to pause the loop."#,
         config = paths.config.display(),
         data = paths.data_dir.display(),
-        bs = bs,
     );
 }

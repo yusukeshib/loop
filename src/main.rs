@@ -29,7 +29,7 @@ mod worldhash;
 
 use anyhow::Result;
 use paths::Paths;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
 
 fn main() -> ExitCode {
     restore_sigpipe();
@@ -50,12 +50,18 @@ fn main() -> ExitCode {
             println!("looop {}", env!("CARGO_PKG_VERSION"));
             Ok(ExitCode::SUCCESS)
         }
+        // Hidden: babysit's detacher re-execs us as the headless worker
+        // supervisor (`looop run --detached-id <id> -- <cmd>`). Route straight
+        // to serve_worker; no deps check, no pulse.
+        "run" | "loop" if rest.first().map(String::as_str) == Some("--detached-id") => {
+            babysit::run_detached_worker(rest).map(|c| ExitCode::from(c.clamp(0, 255) as u8))
+        }
         "run" | "loop" => deps::require_deps(&paths).and_then(|_| match rest.first() {
             Some(goal) => run::cmd_run_goal(&paths, goal),
             None => run::cmd_run(&paths),
         }),
         "tick" => deps::require_deps(&paths).and_then(|_| tick::cmd_tick(&paths)),
-        "ls" => deps::require_deps(&paths).map(|_| ls_passthrough(rest)),
+        "ls" => deps::require_deps(&paths).and_then(|_| ls_inproc(rest)),
         "status" => status::cmd_status(&paths, rest),
         "start-session" => {
             deps::require_deps(&paths).and_then(|_| session::cmd_start_session(&paths, rest))
@@ -64,13 +70,14 @@ fn main() -> ExitCode {
         "kill" => deps::require_deps(&paths).and_then(|_| session::cmd_kill(&paths, rest)),
         "flag" => deps::require_deps(&paths).and_then(|_| session::cmd_flag(&paths, rest)),
         "unflag" => deps::require_deps(&paths).and_then(|_| session::cmd_unflag(&paths, rest)),
+        "prune" => deps::require_deps(&paths).and_then(|_| session::cmd_prune(&paths, rest)),
         "cost" => cost::cmd_cost(&paths, rest),
         "playbook" => playbook::cmd_playbook(&paths, rest),
         "_fmt" => cost::cmd_fmt(&paths),
         "_cost" => cost::cmd_cost_record(&paths, rest),
         other => {
             eprintln!(
-                "looop: unknown command '{other}' (try: run, run <goal>, tick, ls, status, start-session, attach, kill, flag, unflag, playbook, help)"
+                "looop: unknown command '{other}' (try: run, run <goal>, tick, ls, status, start-session, attach, kill, flag, unflag, prune, playbook, help)"
             );
             Ok(ExitCode::from(1))
         }
@@ -117,18 +124,28 @@ fn export_env(paths: &Paths) {
     }
 }
 
-/// `looop ls [opts]` => `babysit ls [opts]` (BABYSIT_DIR already scoped to this
-/// profile via export_env). Passes through --watch/--interval/etc.
-fn ls_passthrough(rest: &[String]) -> ExitCode {
-    let status = Command::new("babysit")
-        .arg("ls")
-        .args(rest)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status();
-    match status {
-        Ok(s) => ExitCode::from(s.code().unwrap_or(1) as u8),
-        Err(_) => ExitCode::from(1),
+/// `looop ls [--json] [--watch] [--interval <dur>]` — render the fleet table
+/// IN-PROCESS via the babysit library (no `babysit` binary). Parses the same
+/// flags babysit ls accepts.
+fn ls_inproc(rest: &[String]) -> Result<ExitCode> {
+    let mut json = false;
+    let mut watch = false;
+    let mut interval = "2s".to_string();
+    let mut it = rest.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--json" => json = true,
+            "--watch" | "-w" => watch = true,
+            "--interval" | "-n" => {
+                if let Some(v) = it.next() {
+                    interval = v.clone();
+                }
+            }
+            _ => {} // ignore unknown flags
+        }
+    }
+    match babysit::ls(json, watch, interval) {
+        Ok(()) => Ok(ExitCode::SUCCESS),
+        Err(_) => Ok(ExitCode::from(1)),
     }
 }

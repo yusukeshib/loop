@@ -74,12 +74,12 @@ pub fn cmd_run(paths: &Paths) -> Result<ExitCode> {
         runner_name,
         util::rst()
     ));
-    if let Some(bd) = &paths.babysit_dir {
+    if paths.babysit_dir.is_some() {
         util::log(&format!(
-            "{}profile fleet: BABYSIT_DIR={d} (attach with: BABYSIT_DIR={d} babysit ls){}",
+            "{}profile fleet under {d} (list with: LOOOP_DATA_DIR={d} looop ls){}",
             util::dim(),
             util::rst(),
-            d = bd.display()
+            d = paths.data_dir.display()
         ));
     }
 

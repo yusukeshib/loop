@@ -11,10 +11,10 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
-        # The Rust binary. babysit is linked as a library (in-process worker
-        # fleet); the few things looop still shells out to at runtime (git, the
-        # `babysit` binary for detached spawn, the configured runner) are wrapped
-        # onto PATH below.
+        # The Rust binary. babysit is linked as a library and the whole worker
+        # fleet runs in-process — no `babysit` binary needed at runtime. `git`
+        # (for the memory dir) is wrapped onto PATH; the configured LLM runner
+        # (pi/claude) is the user's to provide.
         looop = pkgs.rustPlatform.buildRustPackage {
           pname = "looop";
           version = "0.12.0";
@@ -24,8 +24,7 @@
 
           nativeBuildInputs = [ pkgs.makeWrapper ];
 
-          # `git` is shelled out for the memory dir; `babysit` is the only verb
-          # that must spawn the real binary (detached worker re-exec).
+          # `git` is shelled out for the memory dir.
           postInstall = ''
             wrapProgram "$out/bin/looop" \
               --prefix PATH : ${pkgs.lib.makeBinPath (with pkgs; [ git ])}

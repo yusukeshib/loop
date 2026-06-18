@@ -11,15 +11,16 @@ use std::fs;
 use std::process::{Command, Stdio};
 
 pub fn surface_attention(paths: &Paths) {
-    let bsd = paths.bs_hint_env();
+    let lhd = paths.looop_hint_env();
 
     let flags: Vec<String> = babysit::list_looop()
         .into_iter()
         .filter(|s| s.flagged())
         .map(|s| {
             let note = s.note.clone().unwrap_or_default();
+            let short = s.id.strip_prefix("looop-").unwrap_or(&s.id);
             format!(
-                "  ⚑ {id}\n     {note}\n     → {bsd}babysit attach -s {id}",
+                "  ⚑ {id}\n     {note}\n     → {lhd}looop attach {short}",
                 id = s.id
             )
         })
@@ -91,7 +92,6 @@ fn tmux_surface(paths: &Paths) {
         return; // no server running
     }
 
-    let bsd = paths.bs_hint_env();
     let flagged_ids: Vec<String> = babysit::list_looop()
         .into_iter()
         .filter(|s| s.flagged())
@@ -119,11 +119,18 @@ fn tmux_surface(paths: &Paths) {
         if seen.contains(id) {
             continue;
         }
-        let wname = format!("⚑{}", id.strip_prefix("looop-").unwrap_or(id));
+        let short = id.strip_prefix("looop-").unwrap_or(id);
+        let wname = format!("⚑{short}");
         if existing.iter().any(|w| *w == wname) {
             continue;
         }
-        let attach = format!("{bsd}babysit attach -s '{id}'");
+        // Spawn `looop attach` by absolute path (a fresh tmux shell may not have
+        // looop on PATH), profile-scoped via LOOOP_DATA_DIR when non-default.
+        let attach = format!(
+            "{lhd}{bin} attach '{short}'",
+            lhd = paths.looop_hint_env(),
+            bin = paths.bin.display()
+        );
         if tmux_ok(&["new-window", "-n", &wname, &attach]) {
             seen.push(id.clone());
         }

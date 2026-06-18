@@ -113,12 +113,13 @@ impl Paths {
         self.data_dir.join("prompts")
     }
 
-    /// Human-facing `babysit ...` hint prefix. On a non-default profile the
-    /// fleet lives under an isolated BABYSIT_DIR, so a bare `babysit attach`
-    /// would miss the session; emit `BABYSIT_DIR=... ` so the hint works.
-    pub fn bs_hint_env(&self) -> String {
+    /// `looop ...` hint prefix that survives a fresh shell (e.g. a tmux window).
+    /// On a non-default profile the fleet lives under a non-default
+    /// LOOOP_DATA_DIR, which a bare `looop` invocation wouldn't know about, so
+    /// emit `LOOOP_DATA_DIR=... ` to re-scope it. Empty on the default profile.
+    pub fn looop_hint_env(&self) -> String {
         match &self.babysit_dir {
-            Some(d) => format!("BABYSIT_DIR={} ", d.display()),
+            Some(_) => format!("LOOOP_DATA_DIR={} ", self.data_dir.display()),
             None => String::new(),
         }
     }

@@ -9,20 +9,26 @@ use crate::paths::Paths;
 use crate::{babysit, seed};
 use anyhow::Result;
 use std::fs;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
+
+/// Single-quote a string for safe inclusion in a `bash -lc` command line
+/// (wraps in `'…'`, escaping embedded single quotes as `'\''`).
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
 
 const CONTRACT: &str = r#"# ⚑ WORKER CONTRACT (auto-injected — must obey)
 - Never send notifications (no terminal-notifier or any OS notification). You are
   an agent; only the pulse notifies.
 - When you need a human decision / info / approval, do NOT guess — use ONLY this
   and then wait right there:
-    babysit flag -s __SESSION__ "<what you are waiting for / what you need to ask>"
+    "$LOOOP_BIN" flag __ID__ "<what you are waiting for / what you need to ask>"
   Once flagged, the human attaches over tmux to answer (the pulse turns the flag
   into a tmux window they can't miss).
 - When the wait is resolved (you got your answer), unflag before continuing:
-    babysit unflag -s __SESSION__
+    "$LOOOP_BIN" unflag __ID__
 - When the task is 100% complete and nothing is flagged, end your own session:
-    babysit kill -s __SESSION__
+    "$LOOOP_BIN" kill __ID__
   (this lets the pulse prune the corpse). NEVER do this mid-task or while waiting
   on a human.
 - LEASE (ONLY if the PLAYBOOK/goal tells you to claim this task) — announce
@@ -41,7 +47,7 @@ const CONTRACT: &str = r#"# ⚑ WORKER CONTRACT (auto-injected — must obey)
   write the proposal to reports/<id>.md and raise a flag — the human (or the
   next tick) applies it. EXCEPTION: if your task is explicitly a meta task (e.g.
   setup or playbook grooming), you MAY edit those files, but you MUST show the
-  diff and `babysit flag` for human approval BEFORE writing. When unsure whether
+  diff and `"$LOOOP_BIN" flag` for human approval BEFORE writing. When unsure whether
   your task is meta, treat the data dir as read-only and propose via reports/.
 - WORKSPACE: you start in the loop data dir (read-only context for you, save the
   meta exception above). If your task touches a code repo, provision your OWN
@@ -49,7 +55,7 @@ const CONTRACT: &str = r#"# ⚑ WORKER CONTRACT (auto-injected — must obey)
     • if `box` is available:  box new __SESSION__ --repo <repo> && cd "$(box switch __SESSION__)"
     • otherwise (git):         git -C <local-clone> worktree add /tmp/__SESSION__ -b looop/__SESSION__ && cd /tmp/__SESSION__
   (the PLAYBOOK names the repos and which to prefer.)
-- COST: when you end your session (right before `babysit kill`), record this
+- COST: when you end your session (right before `looop kill`), record this
   session's total LLM spend so the human can see it in `looop cost`. If you can
   determine your own USD cost for this run, log it:
     "$LOOOP_BIN" _cost session __ID__ __RUNNER__ <usd>
@@ -59,7 +65,7 @@ const CONTRACT: &str = r#"# ⚑ WORKER CONTRACT (auto-injected — must obey)
   reports/ folder (e.g. reports/<id>.md). That dir PERSISTS across ticks. NEVER
   write deliverables to snapshots/ — the pulse wipes snapshots/ on EVERY beat, so
   anything you leave there vanishes before the human sees it. Reference the
-  reports/ path in your babysit flag so I know where to look.
+  reports/ path in your flag note so I know where to look.
 
 ---
 
@@ -110,24 +116,27 @@ pub fn cmd_start_session(paths: &Paths, args: &[String]) -> Result<ExitCode> {
 
     let cmd = tmpl.replace("{{prompt_file}}", &prompt_file.to_string_lossy());
 
-    // Launch under babysit, detached, in the data dir. Fully detach std fds so a
-    // tick that spawns a worker doesn't block on the daemonized worker.
-    let _ = Command::new("babysit")
-        .args(["run", "-d", "--id", &session, "--", "bash", "-lc", &cmd])
-        .current_dir(&paths.data_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    // The worker runs in the DATA dir. The in-process spawner inherits the
+    // current process cwd (babysit's Pane uses `std::env::current_dir`), so we
+    // `cd` there inside the shell command instead of mutating looop's own cwd.
+    let launch = format!(
+        "cd {} && {cmd}",
+        shell_quote(&paths.data_dir.to_string_lossy())
+    );
+
+    // Launch the worker detached, IN-PROCESS via the babysit library (no
+    // `babysit` binary). babysit re-execs looop as the headless supervisor.
+    babysit::spawn_detached(
+        vec!["bash".to_string(), "-lc".to_string(), launch],
+        &session,
+    )?;
 
     println!(
         "started {session} (runner: {runner}, cwd: {})",
         paths.data_dir.display()
     );
-    println!(
-        "  watch: {}babysit attach -s {session}",
-        paths.bs_hint_env()
-    );
+    // `looop attach` scopes BABYSIT_DIR itself, so no BABYSIT_DIR= prefix needed.
+    println!("  watch: looop attach {id}");
     Ok(ExitCode::SUCCESS)
 }
 
@@ -183,5 +192,13 @@ pub fn cmd_unflag(_paths: &Paths, args: &[String]) -> Result<ExitCode> {
         return Ok(ExitCode::from(1));
     };
     babysit::unflag(&full_session(id))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `looop prune` — clear finished/dead worker corpses (in-process). The pulse
+/// also does this every tick; this is the on-demand verb.
+pub fn cmd_prune(_paths: &Paths, _args: &[String]) -> Result<ExitCode> {
+    babysit::prune();
+    println!("pruned finished worker sessions");
     Ok(ExitCode::SUCCESS)
 }
