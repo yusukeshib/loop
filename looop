@@ -101,7 +101,7 @@
 set -euo pipefail
 shopt -s nullglob
 
-LOOOP_VERSION="0.10.0"
+LOOOP_VERSION="0.11.0"
 
 # ---- paths -------------------------------------------------------------------
 self="${BASH_SOURCE[0]}"
@@ -129,6 +129,13 @@ unset _looop_default_data
 
 SENSORS_DIR="$LOOOP_DATA_DIR/sensors"           # sensor scripts (data: AI writes them as needed)
 PLAYBOOK="$LOOOP_DATA_DIR/PLAYBOOK.md"          # judgment brain (data: grown over time)
+PLAYBOOK_APPROVED="$LOOOP_DATA_DIR/.PLAYBOOK.approved"   # shell-maintained baseline of the last
+                                                 # HUMAN-approved PLAYBOOK (scratch, gitignored). The gate
+                                                 # compares against this to tell a human edit (between beats)
+                                                 # from the AI's edit (during a tick = a proposal).
+PLAYBOOK_PROPOSED="$LOOOP_DATA_DIR/PLAYBOOK.proposed.md" # the AI's pending PLAYBOOK change, awaiting human
+                                                 # approval (looop playbook approve|reject). Does NOT steer
+                                                 # any tick until approved; surfaced every beat while pending.
 GOALS_DIR="$LOOOP_DATA_DIR/goals"               # desired state
 JOURNAL="$LOOOP_DATA_DIR/journal.md"            # action log
 LOCK="$LOOOP_DATA_DIR/.lock"
@@ -323,6 +330,7 @@ prompts/
 runs/
 claims/
 reports/
+.PLAYBOOK.approved
 .lock/
 .last-tick-hash
 .next-interval
@@ -536,8 +544,13 @@ surface_attention() {
         | "  ⚑ \(.id)\n     \(.note)\n     → \($bsd)babysit attach -s \(.id)"' 2>/dev/null || true)"
   att=""
   [ -s "$LOOOP_DATA_DIR/attention.md" ] && att="$(sed 's/^/  /' "$LOOOP_DATA_DIR/attention.md")"
-  [ -z "$flags" ] && [ -z "$att" ] && return 0
+  local pb=""
+  [ -f "$PLAYBOOK_PROPOSED" ] && pb="  📝 PLAYBOOK change pending approval
+     review:  looop playbook diff
+     accept:  looop playbook approve   ·   discard:  looop playbook reject"
+  [ -z "$flags" ] && [ -z "$att" ] && [ -z "$pb" ] && return 0
   log "${c_yel}${c_b}👁  NEEDS YOU${c_rst}"
+  [ -n "$pb" ] && printf '%s\n' "$pb"
   [ -n "$att" ] && printf '%s\n' "$att"
   [ -n "$flags" ] && printf '%s\n' "$flags"
   tmux_surface
@@ -646,6 +659,13 @@ Moves:
   <id> matches the goal file name. The worker starts in the data dir; if its
   task edits CODE it must provision its OWN sandbox first (box if available, else
   git worktree) and cd in — say so in the prompt. Never edit code in the data dir.
+- propose a PLAYBOOK change: write the FULL new PLAYBOOK to PLAYBOOK.proposed.md
+  (NOT PLAYBOOK.md). The PLAYBOOK is the guardrail, so a change does NOT take
+  effect until the HUMAN approves it (looop playbook approve); the loop keeps
+  running on the current PLAYBOOK until then. NOTE: any edit you make to
+  PLAYBOOK.md directly is automatically rolled back and parked as a proposal
+  anyway — so just write PLAYBOOK.proposed.md. If a proposal is already pending
+  (flagged below), do NOT add another.
 - do nothing (a valid move when nothing needs doing)
 
 Optional — set WHEN the next beat runs: you may write a single integer (seconds)
@@ -662,6 +682,7 @@ Do NOT recompute it, do NOT convert to UTC, do NOT use your own clock:
 
 === PLAYBOOK ===
 $(cat "$PLAYBOOK")
+$([ -f "$PLAYBOOK_PROPOSED" ] && printf '\n=== ⚠ A PLAYBOOK CHANGE IS ALREADY PENDING HUMAN APPROVAL ===\nA previous tick proposed an edit; it is awaiting the human and is NOT yet active\n(the PLAYBOOK above is still the one in force). Do NOT propose another PLAYBOOK\nchange this tick — pick a different move or do nothing.\n')
 
 === GOALS ===
 EOF
@@ -728,11 +749,50 @@ reap_stale_claims() {
   done
 }
 
+# ---- PLAYBOOK approval gate --------------------------------------------------
+# The PLAYBOOK is the guardrail; a change to it must be HUMAN-approved before it
+# can steer any tick. The shell enforces this DETERMINISTICALLY (it does not
+# trust the AI to ask): it tells WHO changed PLAYBOOK.md by WHEN it changed.
+#   .PLAYBOOK.approved  = the last human-approved bytes (the baseline the loop runs on).
+#   PLAYBOOK.proposed.md = the AI's pending change, parked for review.
+# A change seen while the loop is IDLE (between beats) is the human's — that edit
+# IS the approval (README: "edit PLAYBOOK.md, it takes effect next tick"). A
+# change made DURING the AI's run is the AI's proposal — rolled back and parked.
+# Both halves are pure file compare/copy (no judgment) so RULE 2 holds.
+
+# Before the AI runs: ensure a baseline exists and fold any idle/human edit into
+# it (idle change == approved). PLAYBOOK.md itself is never altered here.
+playbook_gate_pre() {
+  [ -f "$PLAYBOOK" ] || return 0
+  if [ ! -f "$PLAYBOOK_APPROVED" ]; then
+    cp "$PLAYBOOK" "$PLAYBOOK_APPROVED"   # first run: the seeded/onboarded PLAYBOOK is the baseline
+    return 0
+  fi
+  # Differs while the AI is NOT running → a human edited it between beats: adopt.
+  cmp -s "$PLAYBOOK" "$PLAYBOOK_APPROVED" || cp "$PLAYBOOK" "$PLAYBOOK_APPROVED"
+}
+
+# After the AI runs: if it touched PLAYBOOK.md, that is a PROPOSAL, not a live
+# change. Stash it in PLAYBOOK.proposed.md and restore the approved baseline, so
+# the guardrail the loop steers by never shifts without a human. (If the AI took
+# the happy path and wrote PLAYBOOK.proposed.md directly, PLAYBOOK.md is
+# unchanged and this is a no-op — the proposal still surfaces.)
+playbook_gate_post() {
+  [ -f "$PLAYBOOK_APPROVED" ] || return 0
+  [ -f "$PLAYBOOK" ] || return 0
+  if ! cmp -s "$PLAYBOOK" "$PLAYBOOK_APPROVED"; then
+    cp "$PLAYBOOK" "$PLAYBOOK_PROPOSED"   # park the AI's version for human review
+    cp "$PLAYBOOK_APPROVED" "$PLAYBOOK"   # roll the live PLAYBOOK back to the approved baseline
+    log "  ${c_yel}📝 the tick proposed a PLAYBOOK change — parked for approval (looop playbook diff)${c_rst}"
+  fi
+}
+
 # ---- one beat ----------------------------------------------------------------
 TICK_ACTED=0
 tick() {
   TICK_ACTED=0
   ensure_dirs
+  playbook_gate_pre   # adopt any idle/human PLAYBOOK edit as the new approved baseline
 
   if [ -f "$LOOOP_DATA_DIR/paused" ]; then
     log "paused ($LOOOP_DATA_DIR/paused exists) — skipping"
@@ -800,6 +860,7 @@ tick() {
   else
     log "${c_cyan}╰─ ${c_red}✗ tick FAILED${c_rst} ${c_dim}after $((SECONDS - t0))s (replay: $run_dir)${c_rst}"
   fi
+  playbook_gate_post  # a PLAYBOOK edit by the AI is a proposal, not a live change
   _prune_runs
   surface_attention
 }
@@ -910,6 +971,7 @@ cmd_run_goal() {
 
   babysit prune >/dev/null 2>&1 || true
   reap_stale_claims   # drop leases held by sessions that are no longer alive
+  playbook_gate_pre   # adopt any idle/human PLAYBOOK edit before this run's AI move
 
   # A manual run does NOT refuse while the pulse is running (explicit override),
   # so it must NOT share the pulse's snapshots/ dir: a concurrent pulse tick
@@ -947,6 +1009,7 @@ cmd_run_goal() {
   ( cd "$LOOOP_DATA_DIR" && eval "$tick_cmd" < "$prompt" ) 2>&1 | ts_prefix | tee "$run_dir/output.log" "$LOOOP_DATA_DIR/tick.log"
   log "${c_dim}└────────────────────────────────────────${c_rst}"
   log "${c_grn}✓ run done${c_rst} in $((SECONDS - t0))s ${c_dim}— journal: $(tail -1 "$JOURNAL" 2>/dev/null || echo '(no line)') · replay: $run_dir${c_rst}"
+  playbook_gate_post  # a PLAYBOOK edit by the AI is a proposal, not a live change
   _prune_runs
   surface_attention
 }
@@ -1087,6 +1150,40 @@ cmd_cost() {
   ' "$ledger"
 }
 
+# ---- PLAYBOOK proposal review (looop playbook diff|approve|reject) -----------
+# The human side of the approval gate. A PLAYBOOK change proposed by the AI sits
+# in PLAYBOOK.proposed.md (inert) until the human acts here. `approve` promotes
+# it to the live PLAYBOOK + advances the approved baseline (so the gate won't
+# re-flag it); `reject` discards it; `diff` shows what would change. With no
+# pending proposal everything is a friendly no-op.
+cmd_playbook() {
+  ensure_dirs
+  local action="${1:-diff}"
+  case "$action" in
+    diff)
+      if [ ! -f "$PLAYBOOK_PROPOSED" ]; then echo "looop playbook: no pending change."; return 0; fi
+      echo "looop playbook — pending change (approved → proposed):"
+      diff -u -L "PLAYBOOK.md (approved)" -L "PLAYBOOK.proposed.md" \
+        "${PLAYBOOK_APPROVED:-$PLAYBOOK}" "$PLAYBOOK_PROPOSED" || true
+      echo
+      echo "  approve:  looop playbook approve    reject:  looop playbook reject"
+      ;;
+    approve)
+      [ -f "$PLAYBOOK_PROPOSED" ] || { echo "looop playbook: nothing to approve."; return 0; }
+      cp "$PLAYBOOK_PROPOSED" "$PLAYBOOK"
+      cp "$PLAYBOOK" "$PLAYBOOK_APPROVED"
+      rm -f "$PLAYBOOK_PROPOSED"
+      echo "looop playbook: approved — PLAYBOOK.md updated (takes effect next tick)."
+      ;;
+    reject)
+      [ -f "$PLAYBOOK_PROPOSED" ] || { echo "looop playbook: nothing to reject."; return 0; }
+      rm -f "$PLAYBOOK_PROPOSED"
+      echo "looop playbook: rejected — proposal discarded; PLAYBOOK.md unchanged."
+      ;;
+    *) echo "usage: looop playbook [diff|approve|reject]" >&2; return 1 ;;
+  esac
+}
+
 usage() {
   cat <<EOF
 looop — personal operations loop
@@ -1108,6 +1205,13 @@ Usage:
                                 (ticks + manual goal runs are metered
                                 automatically; workers self-report via
                                 'looop _cost')
+  looop playbook [diff|approve|reject]
+                                review a PLAYBOOK change the AI proposed. PLAYBOOK
+                                edits never take effect until you approve them —
+                                the loop keeps running on the current PLAYBOOK.
+                                diff (default) shows it; approve applies it;
+                                reject discards it. (To change judgment yourself,
+                                just edit PLAYBOOK.md — that takes effect next tick.)
   looop version                  print the looop version
   looop help                     show this help
 
@@ -1141,7 +1245,8 @@ case "$cmd" in
   start-session)   require_deps; shift; cmd_start_session "$@" ;;
   ls)              require_deps; shift 2>/dev/null || true
                    exec babysit ls "$@" ;;   # BABYSIT_DIR already scoped to this profile; --watch/--interval etc. pass through
+  playbook)        shift 2>/dev/null || true; cmd_playbook "$@" ;;
   version|--version|-V) echo "looop $LOOOP_VERSION" ;;
   help|-h|--help)  usage ;;
-  *) echo "looop: unknown command '$cmd' (try: run, run <goal>, tick, ls, start-session, help)" >&2; exit 1 ;;
+  *) echo "looop: unknown command '$cmd' (try: run, run <goal>, tick, ls, playbook, start-session, help)" >&2; exit 1 ;;
 esac

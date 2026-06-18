@@ -128,7 +128,7 @@ ln -s "$PWD/looop/looop" ~/.local/bin/looop
 ### Verify
 
 ```sh
-looop version   # -> looop 0.10.0
+looop version   # -> looop 0.11.0
 looop help
 ```
 
