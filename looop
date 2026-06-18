@@ -95,7 +95,7 @@
 set -euo pipefail
 shopt -s nullglob
 
-LOOOP_VERSION="0.5.0"
+LOOOP_VERSION="0.6.0"
 
 # ---- paths -------------------------------------------------------------------
 self="${BASH_SOURCE[0]}"
@@ -140,10 +140,10 @@ log() { printf '%s[%s]%s %s\n' "$c_dim" "$(date '+%H:%M:%S')" "$c_rst" "$*"; }
 # dim [HH:MM:SS] stamp log() uses, so the AI's narrative lines up under the
 # pulse's own logs. Blank lines stay blank (no lonely timestamp).
 ts_prefix() {
-  local line
+  local line gutter="${1:-}"
   while IFS= read -r line; do
-    if [ -z "$line" ]; then printf '\n'
-    else printf '%s[%s]%s %s\n' "$c_dim" "$(date '+%H:%M:%S')" "$c_rst" "$line"; fi
+    if [ -z "$line" ]; then printf '%s\n' "$gutter"
+    else printf '%s[%s]%s %s%s\n' "$c_dim" "$(date '+%H:%M:%S')" "$c_rst" "$gutter" "$line"; fi
   done
 }
 
@@ -648,17 +648,14 @@ tick() {
   build_prompt > "$prompt"
 
   t0=$SECONDS
-  log "${c_cyan}${c_b}deciding the one move${c_rst} — $runner is thinking ${c_dim}(model latency; its output follows)${c_rst}…"
-  log "${c_dim}┌─ $runner ─────────────────────────────────────────${c_rst}"
+  log "${c_cyan}╭─ ${c_b}deciding the one move${c_rst}${c_cyan} ─${c_rst} ${c_dim}$runner is thinking (its output follows)…${c_rst}"
   export LOOOP_COST_KIND=tick LOOOP_COST_RUNNER="$runner" LOOOP_COST_ID="tick-$(date +%Y%m%d-%H%M%S)"
-  if ( cd "$LOOOP_DATA_DIR" && eval "$tick_cmd" < "$prompt" ) 2>&1 | ts_prefix | tee "$LOOOP_DATA_DIR/tick.log"; then
-    log "${c_dim}└────────────────────────────────────────────${c_rst}"
+  if ( cd "$LOOOP_DATA_DIR" && eval "$tick_cmd" < "$prompt" ) 2>&1 | ts_prefix "${c_cyan}│${c_rst} " | tee "$LOOOP_DATA_DIR/tick.log"; then
     printf '%s\n' "$hash" > "$LOOOP_DATA_DIR/.last-tick-hash"
     TICK_ACTED=1
-    log "${c_grn}✓ tick done${c_rst} in $((SECONDS - t0))s ${c_dim}— journal: $(tail -1 "$JOURNAL" 2>/dev/null || echo '(no line)')${c_rst}"
+    log "${c_cyan}╰─ ${c_grn}✓ decided${c_rst} ${c_dim}in $((SECONDS - t0))s · journal: $(tail -1 "$JOURNAL" 2>/dev/null || echo '(no line)')${c_rst}"
   else
-    log "${c_dim}└────────────────────────────────────────────${c_rst}"
-    log "${c_red}✗ tick FAILED${c_rst} after $((SECONDS - t0))s ${c_dim}(see tick.log)${c_rst}"
+    log "${c_cyan}╰─ ${c_red}✗ tick FAILED${c_rst} ${c_dim}after $((SECONDS - t0))s (see tick.log)${c_rst}"
   fi
   rm -f "$prompt"
   surface_attention
