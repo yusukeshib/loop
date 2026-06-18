@@ -122,4 +122,20 @@ impl Paths {
             None => String::new(),
         }
     }
+
+    /// A throwaway `Paths` rooted at a freshly-created temp data dir. Test-only.
+    #[cfg(test)]
+    pub fn temp() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let dir = env::temp_dir().join(format!("looop-test-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp data dir");
+        Paths {
+            bin: PathBuf::from("looop"),
+            data_dir: dir.clone(),
+            config: dir.join("looop.json"),
+            babysit_dir: None,
+        }
+    }
 }

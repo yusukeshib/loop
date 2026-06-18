@@ -249,3 +249,79 @@ pub fn cmd_cost(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     }
     Ok(ExitCode::SUCCESS)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn usd_formats_like_jq_def() {
+        assert_eq!(usd(0.0), "$0");
+        assert_eq!(usd(-0.0), "$0"); // no -0.0
+        assert_eq!(usd(1.0), "$1");
+        assert_eq!(usd(1.5), "$1.5");
+        assert_eq!(usd(0.12345), "$0.1235"); // rounds at 4dp
+        assert_eq!(usd(0.00004), "$0"); // rounds below 4dp to zero
+        assert_eq!(usd(12.3400), "$12.34"); // trailing zeros trimmed
+    }
+
+    #[test]
+    fn local_day_parses_valid_and_rejects_garbage() {
+        let d = local_day("2026-06-18T12:00:00Z");
+        assert_eq!(d.len(), 10, "yyyy-mm-dd is 10 chars");
+        assert_eq!(d.matches('-').count(), 2);
+        assert_eq!(local_day("not-a-date"), "");
+    }
+
+    #[test]
+    fn collapse_ws_squeezes_all_whitespace() {
+        assert_eq!(collapse_ws("  a\t b\n c "), "a b c");
+        assert_eq!(collapse_ws(""), "");
+    }
+
+    #[test]
+    fn format_line_passthrough_and_empty() {
+        // Non-JSON passes through; blank lines are swallowed.
+        assert_eq!(format_line("plain text"), Some("plain text".to_string()));
+        assert_eq!(format_line(""), None);
+    }
+
+    #[test]
+    fn format_line_assistant_text_and_skips() {
+        let msg = json!({
+            "type": "message_end",
+            "message": { "role": "assistant", "content": [ { "type": "text", "text": "hi" } ] }
+        })
+        .to_string();
+        assert_eq!(format_line(&msg), Some("\nhi".to_string()));
+
+        // Empty assistant text emits nothing.
+        let empty = json!({
+            "type": "message_end",
+            "message": { "role": "assistant", "content": [] }
+        })
+        .to_string();
+        assert_eq!(format_line(&empty), None);
+
+        // Unknown event types emit nothing.
+        let other = json!({ "type": "session_start" }).to_string();
+        assert_eq!(format_line(&other), None);
+    }
+
+    #[test]
+    fn record_cost_appends_only_positive_amounts() {
+        let p = Paths::temp();
+        record_cost(&p, "tick", "id1", "pi", "0.5");
+        record_cost(&p, "tick", "id2", "pi", "0"); // dropped
+        record_cost(&p, "tick", "id3", "pi", "not-a-number"); // dropped
+        record_cost(&p, "goal", "id4", "pi", "1.25");
+
+        let text = std::fs::read_to_string(p.cost_ledger()).unwrap();
+        let lines: Vec<&str> = text.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 2, "only the two positive amounts are recorded");
+        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(first["cost_usd"].as_f64(), Some(0.5));
+        assert_eq!(first["kind"].as_str(), Some("tick"));
+    }
+}

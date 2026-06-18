@@ -187,3 +187,54 @@ pub fn build_prompt(paths: &Paths, focus: Option<&str>, snap_dir: &Path) -> Stri
 
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> Paths {
+        let p = Paths::temp();
+        fs::create_dir_all(p.goals_dir()).unwrap();
+        fs::create_dir_all(p.claims_dir()).unwrap();
+        fs::write(p.playbook(), b"PB RULES\n").unwrap();
+        fs::write(p.goals_dir().join("triage.md"), b"triage the inbox\n").unwrap();
+        p
+    }
+
+    #[test]
+    fn build_prompt_has_all_sections() {
+        let p = fixture();
+        let out = build_prompt(&p, None, &p.snapshots_dir());
+        for marker in [
+            "=== PLAYBOOK ===",
+            "=== GOALS ===",
+            "=== WORKER SESSIONS",
+            "=== WORKER CLAIMS",
+            "=== RECENT JOURNAL ===",
+        ] {
+            assert!(out.contains(marker), "missing section: {marker}");
+        }
+        assert!(out.contains("PB RULES"), "playbook body inlined");
+        assert!(out.contains("triage the inbox"), "goal body inlined");
+    }
+
+    #[test]
+    fn manual_run_focus_only_when_requested() {
+        let p = fixture();
+        let plain = build_prompt(&p, None, &p.snapshots_dir());
+        assert!(!plain.contains("MANUAL RUN"));
+        let focused = build_prompt(&p, Some("triage"), &p.snapshots_dir());
+        assert!(focused.contains("MANUAL RUN"));
+        assert!(focused.contains("triage"), "focus goal interpolated");
+    }
+
+    #[test]
+    fn pending_proposal_warning_appears_only_when_parked() {
+        let p = fixture();
+        let before = build_prompt(&p, None, &p.snapshots_dir());
+        assert!(!before.contains("PLAYBOOK CHANGE IS ALREADY PENDING"));
+        fs::write(p.playbook_proposed(), b"a proposal\n").unwrap();
+        let after = build_prompt(&p, None, &p.snapshots_dir());
+        assert!(after.contains("PLAYBOOK CHANGE IS ALREADY PENDING"));
+    }
+}

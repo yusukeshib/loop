@@ -21,6 +21,20 @@ fn rel(paths: &Paths, p: &Path) -> String {
         .replace('\\', "/")
 }
 
+/// Reduce a sensor snapshot to the part that should WAKE the loop: an object
+/// with a `signal` key contributes only `.signal`; anything else contributes
+/// whole. Volatile `.detail` is dropped so it reaches the prompt but never the
+/// change-detection hash. `serde_json::Value` serializes objects with sorted
+/// keys (BTreeMap), matching `jq -cS`'s canonical form.
+fn wake_signal(v: serde_json::Value) -> serde_json::Value {
+    match &v {
+        serde_json::Value::Object(m) if m.contains_key("signal") => {
+            m.get("signal").cloned().unwrap_or(serde_json::Value::Null)
+        }
+        _ => v,
+    }
+}
+
 fn sorted_glob(dir: &Path, ext: &str) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = fs::read_dir(dir)
         .into_iter()
@@ -55,16 +69,7 @@ pub fn world_hash(paths: &Paths) -> String {
         let raw = fs::read(&f).unwrap_or_default();
         match serde_json::from_slice::<serde_json::Value>(&raw) {
             Ok(v) => {
-                // {object with "signal"} -> .signal, else the whole value.
-                // serde_json::Value serializes objects with sorted keys by
-                // default (BTreeMap), matching `jq -cS`'s canonical form.
-                let signalled = match &v {
-                    serde_json::Value::Object(m) if m.contains_key("signal") => {
-                        m.get("signal").cloned().unwrap_or(serde_json::Value::Null)
-                    }
-                    _ => v,
-                };
-                buf.extend_from_slice(signalled.to_string().as_bytes());
+                buf.extend_from_slice(wake_signal(v).to_string().as_bytes());
                 buf.push(b'\n');
             }
             Err(_) => buf.extend_from_slice(&raw), // non-JSON / error reading: raw bytes
@@ -82,4 +87,52 @@ pub fn world_hash(paths: &Paths) -> String {
     }
 
     util::content_hash(&buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn wake_signal_keeps_only_signal_when_present() {
+        let v = json!({ "signal": { "open": 3 }, "detail": { "checked_at": "now" } });
+        assert_eq!(wake_signal(v), json!({ "open": 3 }));
+    }
+
+    #[test]
+    fn wake_signal_passes_through_objects_without_signal() {
+        let v = json!({ "open": 3, "closed": 1 });
+        assert_eq!(wake_signal(v.clone()), v);
+    }
+
+    #[test]
+    fn wake_signal_passes_through_non_objects() {
+        assert_eq!(wake_signal(json!(42)), json!(42));
+        assert_eq!(wake_signal(json!([1, 2])), json!([1, 2]));
+    }
+
+    #[test]
+    fn wake_signal_ignores_volatile_detail_changes() {
+        // Same signal, different detail => identical wake signal (no false wake).
+        let a = json!({ "signal": { "open": 3 }, "detail": { "ts": 1 } });
+        let b = json!({ "signal": { "open": 3 }, "detail": { "ts": 999 } });
+        assert_eq!(wake_signal(a), wake_signal(b));
+    }
+
+    #[test]
+    fn world_hash_is_stable_and_change_sensitive() {
+        let p = Paths::temp();
+        fs::create_dir_all(p.goals_dir()).unwrap();
+        fs::write(p.playbook(), b"rule one\n").unwrap();
+        fs::write(p.goals_dir().join("a.md"), b"goal a\n").unwrap();
+
+        let h1 = world_hash(&p);
+        let h2 = world_hash(&p);
+        assert_eq!(h1, h2, "same content must hash the same");
+
+        fs::write(p.goals_dir().join("a.md"), b"goal a changed\n").unwrap();
+        let h3 = world_hash(&p);
+        assert_ne!(h1, h3, "a goal edit must change the world hash");
+    }
 }

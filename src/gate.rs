@@ -99,3 +99,51 @@ pub fn playbook_gate_post(paths: &Paths) {
         events::emit(paths, "proposal_parked", serde_json::json!({}));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paths::Paths;
+
+    #[test]
+    fn pre_seeds_baseline_when_missing() {
+        let p = Paths::temp();
+        fs::write(p.playbook(), b"v1").unwrap();
+        assert!(!p.playbook_approved().is_file());
+        playbook_gate_pre(&p);
+        assert_eq!(fs::read(p.playbook_approved()).unwrap(), b"v1");
+    }
+
+    #[test]
+    fn pre_adopts_idle_human_edit() {
+        let p = Paths::temp();
+        fs::write(p.playbook(), b"v1").unwrap();
+        fs::write(p.playbook_approved(), b"v1").unwrap();
+        // Human edits the live PLAYBOOK while the loop is idle.
+        fs::write(p.playbook(), b"v2-human").unwrap();
+        playbook_gate_pre(&p);
+        assert_eq!(fs::read(p.playbook_approved()).unwrap(), b"v2-human");
+    }
+
+    #[test]
+    fn post_parks_ai_proposal_and_rolls_back() {
+        let p = Paths::temp();
+        fs::write(p.playbook(), b"approved").unwrap();
+        fs::write(p.playbook_approved(), b"approved").unwrap();
+        // AI rewrote the live PLAYBOOK during the tick.
+        fs::write(p.playbook(), b"ai-edit").unwrap();
+        playbook_gate_post(&p);
+        // Proposal parked, live PLAYBOOK rolled back to the approved baseline.
+        assert_eq!(fs::read(p.playbook_proposed()).unwrap(), b"ai-edit");
+        assert_eq!(fs::read(p.playbook()).unwrap(), b"approved");
+    }
+
+    #[test]
+    fn post_is_a_noop_when_unchanged() {
+        let p = Paths::temp();
+        fs::write(p.playbook(), b"approved").unwrap();
+        fs::write(p.playbook_approved(), b"approved").unwrap();
+        playbook_gate_post(&p);
+        assert!(!p.playbook_proposed().is_file(), "nothing to park");
+    }
+}
