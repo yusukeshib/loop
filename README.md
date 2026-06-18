@@ -123,8 +123,9 @@ looop version   # -> looop 0.8.0
 looop help
 ```
 
-Runtime deps: `bash`, `git`, `jq`, an LLM runner (`pi` or `claude`), and
-`babysit` for worker sessions.
+Runtime deps: `bash`, `jq`, `babysit`, and an LLM runner (`pi` or `claude`).
+(Workers that touch code also need `git` or `box` to sandbox themselves, but
+that's a worker concern, not a prerequisite for the pulse.)
 
 ## Config & data
 
