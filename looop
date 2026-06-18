@@ -95,7 +95,7 @@
 set -euo pipefail
 shopt -s nullglob
 
-LOOOP_VERSION="0.7.3"
+LOOOP_VERSION="0.8.0"
 
 # ---- paths -------------------------------------------------------------------
 self="${BASH_SOURCE[0]}"
@@ -945,6 +945,9 @@ Usage:
                                 runs. <goal-id> = goals/<id>.md basename.
                                 e.g. looop run setup ; looop run morning-standup
   looop tick                     run a single beat and exit (debug / cron)
+  looop ls [babysit ls opts]     list this profile's worker sessions (⚑ = waiting);
+                                opts pass through to babysit ls, e.g.
+                                looop ls --watch [--interval 2s]  (live, Ctrl-C to stop)
   looop start-session <id> "<prompt>" [runner]
                                 start a worker session (used by the tick AI)
   looop cost [today|all|--json]   report LLM spend recorded in the cost ledger
@@ -958,9 +961,11 @@ Paths (override via env LOOOP_CONFIG / LOOOP_DATA_DIR):
   config  $CONFIG
   data    $LOOOP_DATA_DIR
 
-Worker sessions are managed by external tools:
-  babysit ls                    list worker sessions (⚑ = waiting for you)
-  babysit attach -s looop-<id>   enter a waiting session and talk to it
+Worker sessions are managed by external tools (looop scopes BABYSIT_DIR to this
+profile automatically; use 'looop ls' to skip the BABYSIT_DIR= prefix):
+  looop ls                      list worker sessions (⚑ = waiting for you)
+  looop ls --watch              watch the fleet live (= babysit ls --watch)
+  $(bs_hint_env)babysit attach -s looop-<id>   enter a waiting session and talk to it
 
 The pulse launches each worker in the data dir; if a worker needs to touch code
 it provisions its OWN sandbox (box if available, else git worktree), as told by
@@ -980,7 +985,9 @@ case "$cmd" in
   cost)            shift 2>/dev/null || true; cmd_cost "$@" ;;
   _cost)           shift; record_cost "$@" ;;   # internal: workers/scripts record one call
   start-session)   require_deps; shift; cmd_start_session "$@" ;;
+  ls)              require_deps; shift 2>/dev/null || true
+                   exec babysit ls "$@" ;;   # BABYSIT_DIR already scoped to this profile; --watch/--interval etc. pass through
   version|--version|-V) echo "looop $LOOOP_VERSION" ;;
   help|-h|--help)  usage ;;
-  *) echo "looop: unknown command '$cmd' (try: run, run <goal>, tick, start-session, help)" >&2; exit 1 ;;
+  *) echo "looop: unknown command '$cmd' (try: run, run <goal>, tick, ls, start-session, help)" >&2; exit 1 ;;
 esac
