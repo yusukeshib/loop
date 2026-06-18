@@ -44,6 +44,9 @@ Usage:
                                 (ticks + manual goal runs are metered
                                 automatically; workers self-report via
                                 'looop _cost')
+  looop config zsh|bash          print shell integration (completions);
+                                add eval "$(looop config zsh)" to your ~/.zshrc
+                                (or eval "$(looop config bash)" to ~/.bashrc)
   looop version                  print the looop version
   looop help                     show this help
 
