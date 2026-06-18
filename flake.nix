@@ -11,22 +11,24 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
-        looop = pkgs.stdenvNoCC.mkDerivation {
+        # The Rust binary. babysit is linked as a library (in-process worker
+        # fleet); the few things looop still shells out to at runtime (git, the
+        # `babysit` binary for detached spawn, the configured runner) are wrapped
+        # onto PATH below.
+        looop = pkgs.rustPlatform.buildRustPackage {
           pname = "looop";
-          version = "0.11.1";
+          version = "0.12.0";
           src = ./.;
+
+          cargoLock.lockFile = ./Cargo.lock;
 
           nativeBuildInputs = [ pkgs.makeWrapper ];
 
-          # Runtime deps the script shells out to.
-          runtimeDeps = with pkgs; [ bash coreutils git jq ];
-
-          installPhase = ''
-            runHook preInstall
-            install -Dm755 looop "$out/bin/looop"
+          # `git` is shelled out for the memory dir; `babysit` is the only verb
+          # that must spawn the real binary (detached worker re-exec).
+          postInstall = ''
             wrapProgram "$out/bin/looop" \
-              --prefix PATH : ${pkgs.lib.makeBinPath (with pkgs; [ bash coreutils git jq ])}
-            runHook postInstall
+              --prefix PATH : ${pkgs.lib.makeBinPath (with pkgs; [ git ])}
           '';
 
           meta = with pkgs.lib; {
@@ -48,7 +50,7 @@
         };
 
         devShells.default = pkgs.mkShell {
-          packages = with pkgs; [ bash coreutils git jq shellcheck shfmt ];
+          packages = with pkgs; [ cargo rustc clippy rustfmt git ];
         };
       });
 }

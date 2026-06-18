@@ -4,7 +4,7 @@ A tiny, portable, Kubernetes-shaped control loop for your work.
 
 `looop` watches the things you care about (GitHub, Linear, Grafana, …), and once
 per beat asks an LLM to make **exactly one move** toward your goals — then stops.
-It's a single self-contained bash script with no daemon, no database, no server.
+It's a single self-contained binary with no daemon, no database, no server.
 
 ![looop running a tick](demo.png)
 
@@ -84,7 +84,7 @@ looop cost [today|--json]   report LLM spend from the cost ledger
 looop version | help
 ```
 
-To talk to a waiting worker: `babysit attach -s looop-<id>`.
+To talk to a waiting worker: `looop attach <id>` (or `babysit attach -s looop-<id>`).
 To pause the loop: drop a file at `$data/paused`. To change judgment: edit
 `PLAYBOOK.md` — it takes effect next tick.
 
@@ -92,15 +92,17 @@ To pause the loop: drop a file at `$data/paused`. To change judgment: edit
 
 ### curl (recommended)
 
+Builds the Rust binary from source (needs a [Rust toolchain](https://rustup.rs)):
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/yusukeshib/looop/main/install.sh | bash
 ```
 
-Downloads `looop` to `~/.local/bin/looop`. Override with `LOOOP_INSTALL_DIR`, or
+Installs `looop` to `~/.local/bin/looop`. Override with `LOOOP_INSTALL_DIR`, or
 pin a ref with `LOOOP_REF`:
 
 ```sh
-LOOOP_INSTALL_DIR=/usr/local/bin LOOOP_REF=v0.2.0 \
+LOOOP_INSTALL_DIR=/usr/local/bin LOOOP_REF=v0.12.0 \
   curl -fsSL https://raw.githubusercontent.com/yusukeshib/looop/main/install.sh | bash
 ```
 
@@ -115,26 +117,26 @@ export PATH="$HOME/.local/bin:$PATH"
 ```sh
 nix run github:yusukeshib/looop                 # run without installing
 nix profile install github:yusukeshib/looop     # install into your profile
-nix develop github:yusukeshib/looop             # dev shell with runtime deps
+nix develop github:yusukeshib/looop             # dev shell (cargo, clippy, rustfmt)
 ```
 
-### Manual
+### Cargo
 
 ```sh
-git clone https://github.com/yusukeshib/looop.git
-ln -s "$PWD/looop/looop" ~/.local/bin/looop
+cargo install --git https://github.com/yusukeshib/looop.git --locked looop
 ```
 
 ### Verify
 
 ```sh
-looop version   # -> looop 0.11.1
+looop version   # -> looop 0.12.0
 looop help
 ```
 
-Runtime deps: `bash`, `jq`, `babysit`, and an LLM runner (`pi` or `claude`).
-(Workers that touch code also need `git` or `box` to sandbox themselves, but
-that's a worker concern, not a prerequisite for the pulse.)
+Runtime deps: `git`, the `babysit` binary (only for detached worker spawn — the
+worker fleet is otherwise driven in-process via the babysit library), and an LLM
+runner (`pi` or `claude`). (Workers that touch code also need `git` or `box` to
+sandbox themselves, but that's a worker concern, not a prerequisite for the pulse.)
 
 ## Config & data
 
