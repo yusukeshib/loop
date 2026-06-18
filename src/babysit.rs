@@ -1,12 +1,25 @@
-//! Thin wrapper over the `babysit` CLI — the worker fleet.
+//! Wrapper over the `babysit` worker fleet.
 //!
-//! Step 2 of the port still SHELLS OUT to the babysit binary, exactly like the
-//! bash version. Step 3 will replace these calls with in-process lib calls once
-//! babysit grows a `lib.rs`; keeping them behind this module makes that swap a
-//! one-file change.
+//! Step 3: the hot, data-returning path (`list`) now calls the babysit LIBRARY
+//! in-process (no `babysit ls --json` subprocess, no JSON re-parse). Action verbs
+//! (prune/status/run) still shell out to the binary for now; migrating them is a
+//! follow-on. The leading `::babysit` disambiguates the extern crate from this
+//! same-named module.
 
 use serde::Deserialize;
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
+
+/// A process-wide current-thread tokio runtime to drive babysit's async API.
+/// looop is otherwise synchronous; async is confined to this boundary.
+fn rt() -> &'static tokio::runtime::Runtime {
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("looop: failed to build tokio runtime")
+    })
+}
 
 /// One row of `babysit ls --json`. Tolerant of missing fields (a starting
 /// session may not have an exit code or note yet).
@@ -39,26 +52,25 @@ impl Session {
     }
 }
 
-/// `babysit ls --json`, parsed. Any failure yields an empty list (matches the
-/// bash `2>/dev/null || true`): the pulse degrades gracefully, never wedges.
+/// List sessions via the babysit library, IN-PROCESS. Any failure yields an
+/// empty list (matches the bash `2>/dev/null || true`): the pulse degrades
+/// gracefully, never wedges. babysit's `paths::root()` reads `$BABYSIT_DIR`
+/// fresh, so this honors looop's profile scoping just like the old shell-out.
 pub fn list() -> Vec<Session> {
-    let out = Command::new("babysit")
-        .args(["ls", "--json"])
-        .stderr(Stdio::null())
-        .output();
-    let Ok(out) = out else {
-        return Vec::new();
-    };
-    if !out.status.success() {
-        return Vec::new();
+    match rt().block_on(::babysit::api::list_sessions()) {
+        Ok(sessions) => sessions
+            .into_iter()
+            .map(|s| Session {
+                id: s.id,
+                cmd: None,
+                state: s.state,
+                alive: s.alive,
+                exit_code: s.exit_code.map(|c| c as i64),
+                note: s.note,
+            })
+            .collect(),
+        Err(_) => Vec::new(),
     }
-    // Parse element-by-element so one malformed/extended row can't drop the whole
-    // fleet (resilience to babysit schema drift).
-    serde_json::from_slice::<Vec<serde_json::Value>>(&out.stdout)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|v| serde_json::from_value::<Session>(v).ok())
-        .collect()
 }
 
 /// looop-owned sessions only.
