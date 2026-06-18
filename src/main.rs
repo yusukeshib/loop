@@ -84,6 +84,22 @@ fn main() -> ExitCode {
         "flag" => deps::require_deps(&paths).and_then(|_| session::cmd_flag(&paths, rest)),
         "unflag" => deps::require_deps(&paths).and_then(|_| session::cmd_unflag(&paths, rest)),
         "prune" => deps::require_deps(&paths).and_then(|_| session::cmd_prune(&paths, rest)),
+        "config" => match rest.first().map(String::as_str) {
+            Some("zsh") => {
+                print!("{}", include_str!("completions/looop.zsh"));
+                Ok(ExitCode::SUCCESS)
+            }
+            Some("bash") => {
+                print!("{}", include_str!("completions/looop.bash"));
+                Ok(ExitCode::SUCCESS)
+            }
+            _ => {
+                eprintln!("looop config: specify a shell — zsh or bash");
+                eprintln!("  zsh:  eval \"$(looop config zsh)\"");
+                eprintln!("  bash: eval \"$(looop config bash)\"");
+                Ok(ExitCode::from(1))
+            }
+        },
         "cost" => cost::cmd_cost(&paths, rest),
         "_fmt" => cost::cmd_fmt(&paths),
         "_cost" => cost::cmd_cost_record(&paths, rest),
@@ -159,5 +175,29 @@ fn ls_inproc(rest: &[String]) -> Result<ExitCode> {
     match babysit::ls(json, watch, interval) {
         Ok(()) => Ok(ExitCode::SUCCESS),
         Err(_) => Ok(ExitCode::from(1)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// `looop config zsh` must emit a script that registers the completion
+    /// (the `#compdef` autoload tag plus the live `compdef` call), so a bare
+    /// `eval "$(looop config zsh)"` actually wires up completion.
+    #[test]
+    fn zsh_completion_registers_itself() {
+        let s = include_str!("completions/looop.zsh");
+        assert!(s.contains("#compdef looop"), "missing #compdef tag");
+        assert!(s.contains("compdef _looop looop"), "missing compdef call");
+    }
+
+    /// `looop config bash` must emit a script that registers the completion via
+    /// `complete -F`, so `eval "$(looop config bash)"` wires it up.
+    #[test]
+    fn bash_completion_registers_itself() {
+        let s = include_str!("completions/looop.bash");
+        assert!(
+            s.contains("complete -F _looop looop"),
+            "missing complete -F registration"
+        );
     }
 }

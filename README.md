@@ -88,8 +88,25 @@ looop ls [--watch]             list this profile's worker sessions (⚑ = waitin
 looop attach <id>              attach to a waiting worker (Ctrl-\ Ctrl-\ to detach)
 looop kill|flag|unflag <id>    manage a worker; looop prune clears finished ones
 looop cost [today|all|--json]  report LLM spend from the cost ledger
+looop config zsh|bash          print shell integration (tab completions)
 looop version | help           (looop help = the full design manual)
 ```
+
+## Shell integration
+
+```sh
+# Zsh (~/.zshrc)
+eval "$(looop config zsh)"
+
+# Bash (~/.bashrc)
+eval "$(looop config bash)"
+```
+
+This adds tab completion for every subcommand plus dynamic completion for
+`looop run <goal-id>` (your `goals/*.md`) and `looop attach|kill|flag|unflag
+<id>` (this profile's live worker sessions). Completions resolve `LOOOP_DATA_DIR`
+the same way the binary does, so an isolated profile completes its own goals and
+fleet.
 
 To change judgment: edit `PLAYBOOK.md` — it takes effect next tick.
 
