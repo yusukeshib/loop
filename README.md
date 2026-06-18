@@ -6,7 +6,34 @@ A tiny, portable, Kubernetes-shaped control loop for your work.
 per beat asks an LLM to make **exactly one move** toward your goals — then stops.
 It's a single self-contained bash script with no daemon, no database, no server.
 
-<!-- TODO: drop a screenshot/GIF at assets/demo.png, then uncomment:
+```console
+$ looop
+[09:00:00] looop started (idle 60s / busy 60s, runner pi)
+[09:00:00] sensing the world (4 sensors)…
+[09:00:00]   ✓ github-prs (1s)
+[09:00:01]   ✓ issue-tracker (1s)
+[09:00:02]   ✓ alerts (0s)
+[09:00:02]   ✓ today (0s)
+[09:00:02] ╭─ deciding the one move ─ pi is thinking (its output follows)…
+[09:00:08] │ Checking sensors in priority order:
+[09:00:08] │   1. alerts        → none firing       ✓ clear
+[09:00:08] │   2. issue-tracker  → nothing assigned  ✓ clear
+[09:00:08] │   3. github-prs     → 1 PR approved + mergeable, already update-branched
+[09:00:08] │                       → human's merge call, don't chase it
+[09:00:08] │ All priorities clear. Appending to journal and standing down.
+[09:00:09] ╰─ ✓ decided in 7s · journal: 09:00 no-op — all clear; PR #123 left for human merge
+[09:01:09] sensing the world (4 sensors)…
+[09:01:09]   ✓ github-prs (1s)
+[09:01:10]   ✓ issue-tracker (1s)
+[09:01:10]   ✓ alerts (0s)
+[09:01:10]   ✓ today (0s)
+[09:01:10] world unchanged — nothing to decide; skipping (no AI call)
+```
+
+One full beat (sense → decide → journal), then the next beat skips the LLM
+entirely because nothing in the world changed.
+
+<!-- Optional: drop a colorized screenshot/GIF at assets/demo.png and uncomment:
 ![looop running a tick](assets/demo.png)
 -->
 
