@@ -95,7 +95,7 @@
 set -euo pipefail
 shopt -s nullglob
 
-LOOOP_VERSION="0.9.0"
+LOOOP_VERSION="0.9.1"
 
 # ---- paths -------------------------------------------------------------------
 self="${BASH_SOURCE[0]}"
@@ -163,6 +163,22 @@ _hash() {
   fi
 }
 
+# Run ONE sensor script with a portable timeout so a hung sensor (network auth,
+# a wedged gh/linear call, ...) can never freeze the whole pulse. Uses coreutils
+# `timeout`, or `gtimeout` (brew coreutils on macOS); if neither exists it runs
+# uncapped (best effort). Cap is LOOOP_SENSOR_TIMEOUT seconds (default 60; 0
+# disables). Args: script outfile errfile. Returns the sensor's exit status
+# (124 = timed out, per coreutils).
+_sensor_exec() {  # script outfile errfile
+  local to="${LOOOP_SENSOR_TIMEOUT:-60}" tbin=""
+  if [ "$to" != 0 ]; then
+    if command -v timeout >/dev/null 2>&1; then tbin=timeout
+    elif command -v gtimeout >/dev/null 2>&1; then tbin=gtimeout; fi
+  fi
+  if [ -n "$tbin" ]; then "$tbin" "$to" "$1" >"$2" 2>"$3"
+  else "$1" >"$2" 2>"$3"; fi
+}
+
 # Prefix for human-facing `babysit ...` hints. On a non-default profile the
 # worker fleet lives under an isolated BABYSIT_DIR, so a bare `babysit attach`
 # would look in ~/.babysit and miss the session; emit `BABYSIT_DIR=... ` so the
@@ -190,6 +206,8 @@ dep_hint() {
   case "$1" in
     babysit) echo "cargo install babysit   (or: nix profile install github:yusukeshib/babysit)" ;;
     jq)      echo "brew install jq         (or your package manager: apt-get install jq, ...)" ;;
+    pi)      echo "see https://github.com/earendil-works/pi  (the default tick runner)" ;;
+    claude)  echo "see https://docs.claude.com/claude-code" ;;
     *)       echo "see the tool's docs" ;;
   esac
 }
@@ -205,6 +223,23 @@ require_deps() {
       missing=1
     fi
   done
+  # The tick ITSELF shells out to the configured runner (pi/claude), so a missing
+  # runner binary is a hard prereq too — not a worker concern. Resolve the runner
+  # from $CONFIG when it exists, else from the inline default, and check its
+  # first token (the binary) so we fail fast with an install hint instead of a
+  # cryptic "command not found" on the first tick.
+  if command -v jq >/dev/null 2>&1; then
+    local rcfg rname rcmd rbin
+    if [ -f "$CONFIG" ]; then rcfg="$(cat "$CONFIG")"; else rcfg="$(default_config)"; fi
+    rname="$(printf '%s' "$rcfg" | jq -r '.default // empty' 2>/dev/null)"
+    rcmd="$(printf '%s' "$rcfg" | jq -r --arg r "$rname" '.runners[$r].tick // empty' 2>/dev/null)"
+    rbin="${rcmd%%[[:space:]]*}"
+    if [ -n "$rbin" ] && ! command -v "$rbin" >/dev/null 2>&1; then
+      [ "$missing" -eq 0 ] && echo "looop: missing required dependencies — cannot run:" >&2
+      printf '  %-8s install:  %s\n' "$rbin" "$(dep_hint "$rbin")" >&2
+      missing=1
+    fi
+  fi
   [ "$missing" -eq 0 ] || { printf '\nInstall the above, then re-run looop.\n' >&2; exit 1; }
 }
 
@@ -429,7 +464,7 @@ is newer than the last-improved date below — make ONE small improvement:
   one). Keep it to a single small change.
 - Do it as an interactive session in the data dir, with a DATE-STAMPED id so a
   finished run never blocks tomorrow's (RULE: recurring goals use dated ids):
-     looop start-session playbook-YYYYMMDD - "<the task above>"
+     looop start-session playbook-YYYYMMDD "<the task above>"
 - PLAYBOOK changes affect every future tick, so PROPOSE the diff and
   `babysit flag` for my confirmation before committing.
 - When done, set last-improved below to today's date. Occasionally `babysit prune`
@@ -561,8 +596,8 @@ quiet a long while (spare cost / external APIs). Write nothing to keep the
 default rhythm. This does NOT count as your one move.
 
 After your move, append exactly ONE line to journal.md. Copy the timestamp
-prefix below VERBATIM — it is already in local time (America/New_York). Do NOT
-recompute it, do NOT convert to UTC, do NOT use your own clock:
+prefix below VERBATIM — it is already in this host's local time ($(date '+%Z')).
+Do NOT recompute it, do NOT convert to UTC, do NOT use your own clock:
   - $(date '+%Y-%m-%d %H:%M') <what you did and why>
 (For reference, the current local time right now is $(date '+%Y-%m-%d %H:%M %Z').)
 
@@ -665,9 +700,11 @@ tick() {
     [ -e "$s" ] || continue
     name="$(basename "${s%.sh}")"
     t0=$SECONDS
-    if "$s" > "$SNAPSHOTS_DIR/sensor-$name.json" 2>"$SNAPSHOTS_DIR/sensor-$name.err"; then
+    if _sensor_exec "$s" "$SNAPSHOTS_DIR/sensor-$name.json" "$SNAPSHOTS_DIR/sensor-$name.err"; then
       log "  ${c_grn}✓${c_rst} $name ${c_dim}($((SECONDS - t0))s)${c_rst}"
     else
+      local rc=$?
+      [ "$rc" -eq 124 ] && printf 'sensor timed out after %ss (LOOOP_SENSOR_TIMEOUT)\n' "${LOOOP_SENSOR_TIMEOUT:-60}" >> "$SNAPSHOTS_DIR/sensor-$name.err"
       log "  ${c_red}✗ $name FAILED${c_rst} ${c_dim}($((SECONDS - t0))s) — see snapshots/sensor-$name.err${c_rst}"
     fi
     # drop the empty .err a successful sensor leaves behind (keep only real errors)
@@ -691,7 +728,8 @@ tick() {
 
   t0=$SECONDS
   log "${c_cyan}╭─ ${c_b}deciding the one move${c_rst}${c_cyan} ─${c_rst} ${c_dim}$runner is thinking (its output follows)…${c_rst}"
-  export LOOOP_COST_KIND=tick LOOOP_COST_RUNNER="$runner" LOOOP_COST_ID="tick-$(date +%Y%m%d-%H%M%S)"
+  local cost_id; cost_id="tick-$(date +%Y%m%d-%H%M%S)"
+  export LOOOP_COST_KIND=tick LOOOP_COST_RUNNER="$runner" LOOOP_COST_ID="$cost_id"
   if ( cd "$LOOOP_DATA_DIR" && eval "$tick_cmd" < "$prompt" ) 2>&1 | ts_prefix "${c_cyan}│${c_rst} " | tee "$LOOOP_DATA_DIR/tick.log"; then
     printf '%s\n' "$hash" > "$LOOOP_DATA_DIR/.last-tick-hash"
     TICK_ACTED=1
@@ -739,7 +777,11 @@ cmd_run() {
     if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null; then
       echo "looop: already running (pid $oldpid)" >&2; exit 1
     fi
-    rm -rf "$LOCK" && mkdir "$LOCK"
+    # Stale lock (owner is gone): reclaim it. mkdir is the atomic arbiter — if a
+    # second pulse races us through the same stale-lock path, exactly one mkdir
+    # wins; the loser must exit rather than run lockless (would double-act).
+    rm -rf "$LOCK"
+    mkdir "$LOCK" 2>/dev/null || { echo "looop: lost the lock race — another pulse started; exiting" >&2; exit 1; }
   fi
   printf '%s\n' "$$" > "$LOCK/pid"
   trap 'rm -rf "$LOCK"' EXIT
@@ -806,13 +848,22 @@ cmd_run_goal() {
   babysit prune >/dev/null 2>&1 || true
   reap_stale_claims   # drop leases held by sessions that are no longer alive
 
+  # A manual run does NOT refuse while the pulse is running (explicit override),
+  # so it must NOT share the pulse's snapshots/ dir: a concurrent pulse tick
+  # could wipe/read it mid-flight and the two would tear each other's readings.
+  # Sense into a private temp dir instead (dynamic scoping makes build_prompt
+  # below pick this up). Cleaned on exit even if the run aborts under set -e.
+  local SNAPSHOTS_DIR
+  SNAPSHOTS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/looop-run.XXXXXX")"
+  trap 'rm -rf "$SNAPSHOTS_DIR"' EXIT
+
   # fresh sensors so the move reflects the current world (same as a tick)
   local s name
   rm -rf "$SNAPSHOTS_DIR"; mkdir -p "$SNAPSHOTS_DIR"   # same level-triggered wipe as a tick
   for s in "$SENSORS_DIR"/*.sh; do
     [ -e "$s" ] || continue
     name="$(basename "${s%.sh}")"
-    "$s" > "$SNAPSHOTS_DIR/sensor-$name.json" 2>"$SNAPSHOTS_DIR/sensor-$name.err" || true
+    _sensor_exec "$s" "$SNAPSHOTS_DIR/sensor-$name.json" "$SNAPSHOTS_DIR/sensor-$name.err" || true
     [ -s "$SNAPSHOTS_DIR/sensor-$name.err" ] || rm -f "$SNAPSHOTS_DIR/sensor-$name.err"
   done
 
