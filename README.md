@@ -6,6 +6,10 @@ A tiny, portable, Kubernetes-shaped control loop for your work.
 per beat asks an LLM to make **exactly one move** toward your goals — then stops.
 It's a single self-contained bash script with no daemon, no database, no server.
 
+<!-- TODO: drop a screenshot/GIF at assets/demo.png, then uncomment:
+![looop running a tick](assets/demo.png)
+-->
+
 ## How it works
 
 Like a Kubernetes controller, every **tick** reconciles *desired state* against
