@@ -30,9 +30,13 @@ Like a Kubernetes controller, every **tick** reconciles *desired state* against
 5. LOG      append one line to journal.md, surface anything that needs you
 ```
 
-It is **level-triggered**, not edge-triggered: each tick re-derives what to do
-from the *current* world (snapshots are wiped and re-sensed every beat), so a
-crashed tick, renamed sensor, or dead worker self-heals on the next beat.
+Each tick is **stateless and disposable**: the process carries nothing in
+memory between beats — all state lives in files (goals, snapshots, journal,
+claims). Because of that the loop is **level-triggered**, not edge-triggered:
+every tick re-derives what to do from the *current* world (snapshots are wiped
+and re-sensed each beat), so a crashed tick, renamed sensor, or dead worker just
+self-heals on the next beat. Kill the pulse anytime; the next tick picks up
+exactly where the world is, not where a remembered cursor left off.
 
 ## Concepts
 
