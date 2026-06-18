@@ -95,7 +95,7 @@
 set -euo pipefail
 shopt -s nullglob
 
-LOOOP_VERSION="0.7.2"
+LOOOP_VERSION="0.7.3"
 
 # ---- paths -------------------------------------------------------------------
 self="${BASH_SOURCE[0]}"
@@ -162,6 +162,12 @@ _hash() {
   else cksum
   fi
 }
+
+# Prefix for human-facing `babysit ...` hints. On a non-default profile the
+# worker fleet lives under an isolated BABYSIT_DIR, so a bare `babysit attach`
+# would look in ~/.babysit and miss the session; emit `BABYSIT_DIR=... ` so the
+# printed command actually works. Empty on the default profile.
+bs_hint_env() { [ -n "${BABYSIT_DIR:-}" ] && printf 'BABYSIT_DIR=%s ' "$BABYSIT_DIR"; }
 
 # Prefix each line of a streamed sub-process (the runner's output) with the same
 # dim [HH:MM:SS] stamp log() uses, so the AI's narrative lines up under the
@@ -448,8 +454,8 @@ SEED
 surface_attention() {
   local flags att
   flags="$(babysit ls --json 2>/dev/null \
-    | jq -r '.[] | select(.id|startswith("looop-")) | select(.note != null and .note != "")
-        | "  ⚑ \(.id)\n     \(.note)\n     → babysit attach -s \(.id)"' 2>/dev/null || true)"
+    | jq -r --arg bsd "$(bs_hint_env)" '.[] | select(.id|startswith("looop-")) | select(.note != null and .note != "")
+        | "  ⚑ \(.id)\n     \(.note)\n     → \($bsd)babysit attach -s \(.id)"' 2>/dev/null || true)"
   att=""
   [ -s "$LOOOP_DATA_DIR/attention.md" ] && att="$(sed 's/^/  /' "$LOOOP_DATA_DIR/attention.md")"
   [ -z "$flags" ] && [ -z "$att" ] && return 0
@@ -483,7 +489,7 @@ tmux_surface() {
     grep -qxF "$id" "$seen" 2>/dev/null && continue              # already surfaced this flag
     wname="⚑${id#looop-}"
     printf '%s\n' "$existing" | grep -qxF "$wname" && continue   # window already open
-    if tmux new-window -n "$wname" "babysit attach -s '$id'" 2>/dev/null; then
+    if tmux new-window -n "$wname" "$(bs_hint_env)babysit attach -s '$id'" 2>/dev/null; then
       printf '%s\n' "$id" >> "$seen"
     fi
   done <<EOF
@@ -892,7 +898,7 @@ EOF
   local cmd="${tmpl//\{\{prompt_file\}\}/$prompt_file}"
   ( cd "$workspace" && babysit run -d --id "$session" -- bash -lc "$cmd" ) </dev/null >/dev/null 2>&1
   echo "started $session (runner: $runner, cwd: $workspace)"
-  echo "  watch: babysit attach -s $session"
+  echo "  watch: $(bs_hint_env)babysit attach -s $session"
 }
 
 # ---- cost report (looop cost) ------------------------------------------------
