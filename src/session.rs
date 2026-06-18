@@ -130,3 +130,58 @@ pub fn cmd_start_session(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     );
     Ok(ExitCode::SUCCESS)
 }
+
+/// Normalize a user-supplied worker id to its full session id. Accepts both the
+/// short goal id (`triage`) and the full session id (`looop-triage`).
+fn full_session(id: &str) -> String {
+    if id.starts_with("looop-") {
+        id.to_string()
+    } else {
+        format!("looop-{id}")
+    }
+}
+
+/// `looop attach <id>` — attach the terminal to a worker session (in-process).
+pub fn cmd_attach(_paths: &Paths, args: &[String]) -> Result<ExitCode> {
+    let Some(id) = args.first() else {
+        eprintln!("usage: looop attach <id>");
+        return Ok(ExitCode::from(1));
+    };
+    let code = babysit::attach(&full_session(id))?;
+    Ok(ExitCode::from(code.clamp(0, 255) as u8))
+}
+
+/// `looop kill <id>` — terminate a worker session (in-process).
+pub fn cmd_kill(_paths: &Paths, args: &[String]) -> Result<ExitCode> {
+    let Some(id) = args.first() else {
+        eprintln!("usage: looop kill <id>");
+        return Ok(ExitCode::from(1));
+    };
+    babysit::kill(&full_session(id))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `looop flag <id> [message]` — raise a worker's attention flag (in-process).
+pub fn cmd_flag(_paths: &Paths, args: &[String]) -> Result<ExitCode> {
+    let Some(id) = args.first() else {
+        eprintln!("usage: looop flag <id> [message]");
+        return Ok(ExitCode::from(1));
+    };
+    let message = if args.len() > 1 {
+        Some(args[1..].join(" "))
+    } else {
+        None
+    };
+    babysit::flag(&full_session(id), message)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `looop unflag <id>` — clear a worker's attention flag (in-process).
+pub fn cmd_unflag(_paths: &Paths, args: &[String]) -> Result<ExitCode> {
+    let Some(id) = args.first() else {
+        eprintln!("usage: looop unflag <id>");
+        return Ok(ExitCode::from(1));
+    };
+    babysit::unflag(&full_session(id))?;
+    Ok(ExitCode::SUCCESS)
+}

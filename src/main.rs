@@ -1,8 +1,10 @@
 //! looop — a tiny, portable, Kubernetes-shaped control loop for your work.
 //!
 //! Rust port. The pulse is unbreakable code, judgment is the AI, memory is git
-//! (RULE 2). babysit is still shelled out (step 2); a future step links it as a
-//! lib for a single-binary build + `looop attach`-style verbs.
+//! (RULE 2). babysit is linked as a LIBRARY: list/prune/status/kill/flag/unflag/
+//! attach all run in-process. The one verb that still shells out is detached
+//! worker spawn (`start-session` -> `babysit run -d`), because babysit's detacher
+//! re-execs its own binary as the supervisor.
 
 mod babysit;
 mod config;
@@ -58,13 +60,17 @@ fn main() -> ExitCode {
         "start-session" => {
             deps::require_deps(&paths).and_then(|_| session::cmd_start_session(&paths, rest))
         }
+        "attach" => deps::require_deps(&paths).and_then(|_| session::cmd_attach(&paths, rest)),
+        "kill" => deps::require_deps(&paths).and_then(|_| session::cmd_kill(&paths, rest)),
+        "flag" => deps::require_deps(&paths).and_then(|_| session::cmd_flag(&paths, rest)),
+        "unflag" => deps::require_deps(&paths).and_then(|_| session::cmd_unflag(&paths, rest)),
         "cost" => cost::cmd_cost(&paths, rest),
         "playbook" => playbook::cmd_playbook(&paths, rest),
         "_fmt" => cost::cmd_fmt(&paths),
         "_cost" => cost::cmd_cost_record(&paths, rest),
         other => {
             eprintln!(
-                "looop: unknown command '{other}' (try: run, run <goal>, tick, ls, status, playbook, start-session, help)"
+                "looop: unknown command '{other}' (try: run, run <goal>, tick, ls, status, start-session, attach, kill, flag, unflag, playbook, help)"
             );
             Ok(ExitCode::from(1))
         }

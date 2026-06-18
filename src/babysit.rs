@@ -1,13 +1,15 @@
 //! Wrapper over the `babysit` worker fleet.
 //!
-//! Step 3: the hot, data-returning path (`list`) now calls the babysit LIBRARY
-//! in-process (no `babysit ls --json` subprocess, no JSON re-parse). Action verbs
-//! (prune/status/run) still shell out to the binary for now; migrating them is a
-//! follow-on. The leading `::babysit` disambiguates the extern crate from this
-//! same-named module.
+//! Step 3+4: every data + control path that CAN run in-process now does. `list`,
+//! `prune`, `status_exists`, `kill`, `flag`, `unflag` and `attach` call the
+//! babysit LIBRARY directly (no subprocess, no JSON re-parse). The ONE verb that
+//! must still shell out is detached spawn (`start-session` → `babysit run -d`):
+//! babysit's detacher re-execs `std::env::current_exe()` as the supervisor, which
+//! in-process would be `looop` (it has no `run --detached-id`), so the real
+//! `babysit` binary must own that fork. The leading `::babysit` disambiguates the
+//! extern crate from this same-named module.
 
 use serde::Deserialize;
-use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
 /// A process-wide current-thread tokio runtime to drive babysit's async API.
@@ -15,7 +17,11 @@ use std::sync::OnceLock;
 fn rt() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
+        // enable_all: `attach` drives a control socket + PTY (needs the IO and
+        // time drivers). The list/prune paths only touch the filesystem, but a
+        // single shared runtime keeps the async boundary in one place.
         tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("looop: failed to build tokio runtime")
     })
@@ -78,24 +84,66 @@ pub fn list_looop() -> Vec<Session> {
     list().into_iter().filter(Session::is_looop).collect()
 }
 
-/// `babysit prune` — clear exited corpses; best-effort.
+/// Clear exited/dead-owner corpses, IN-PROCESS and SILENTLY. babysit's own
+/// `sub::prune` prints to stdout (it is a CLI handler), which would pollute
+/// looop's pretty output, so we drive the same decision over babysit's lower
+/// level `session`/`paths` modules instead. Best-effort: any error is ignored,
+/// matching the old `2>/dev/null` shell-out.
 pub fn prune() {
-    let _ = Command::new("babysit")
-        .arg("prune")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    use ::babysit::session::{self, State};
+    rt().block_on(async {
+        let ids = match session::list_ids().await {
+            Ok(ids) => ids,
+            Err(_) => return,
+        };
+        for id in ids {
+            let Ok(meta) = session::read_meta(&id).await else {
+                continue; // unparseable meta — leave it alone, never nuke blind
+            };
+            let status = session::read_status(&id).await.ok();
+            let alive = session::is_pid_alive(meta.babysit_pid);
+            let dead = match status.as_ref().map(|s| s.state) {
+                Some(State::Exited | State::Killed) => true,
+                Some(State::Starting | State::Running) if !alive => true,
+                None if !alive => true,
+                _ => false,
+            };
+            if dead && let Ok(dir) = ::babysit::paths::session_dir(&id) {
+                let _ = tokio::fs::remove_dir_all(&dir).await;
+            }
+        }
+    });
 }
 
-/// `babysit status -s <id>` success — does a session with this id exist?
+/// Does a session with this id exist? In-process: the id is present in the
+/// fleet list (replaces `babysit status -s <id>`).
 pub fn status_exists(session: &str) -> bool {
-    Command::new("babysit")
-        .args(["status", "-s", session])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    list().iter().any(|s| s.id == session)
+}
+
+/// `looop kill <id>` — terminate a session. Prints babysit's own result line
+/// (this is a user-facing verb, so its output is wanted). Returns Ok on success.
+pub fn kill(session: &str) -> anyhow::Result<()> {
+    rt().block_on(::babysit::sub::kill(Some(session.to_string()), false))
+}
+
+/// `looop flag <id> [msg]` — raise a worker's attention flag.
+pub fn flag(session: &str, message: Option<String>) -> anyhow::Result<()> {
+    rt().block_on(::babysit::sub::flag(
+        Some(session.to_string()),
+        message,
+        false,
+    ))
+}
+
+/// `looop unflag <id>` — clear a worker's attention flag.
+pub fn unflag(session: &str) -> anyhow::Result<()> {
+    rt().block_on(::babysit::sub::unflag(Some(session.to_string()), false))
+}
+
+/// `looop attach <id>` — attach the terminal to a session; returns its exit code.
+pub fn attach(session: &str) -> anyhow::Result<i32> {
+    rt().block_on(::babysit::attach::attach(Some(session.to_string())))
 }
 
 /// Is a session currently alive?
@@ -106,4 +154,31 @@ pub fn is_alive(session: &str) -> bool {
 /// Any looop worker currently in flight?
 pub fn any_looop_alive() -> bool {
     list_looop().iter().any(|s| s.alive)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sess(id: &str, note: Option<&str>) -> Session {
+        Session {
+            id: id.to_string(),
+            note: note.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn is_looop_matches_only_prefixed_ids() {
+        assert!(sess("looop-triage", None).is_looop());
+        assert!(!sess("other-job", None).is_looop());
+        assert!(!sess("looop", None).is_looop()); // needs the trailing dash
+    }
+
+    #[test]
+    fn flagged_iff_nonempty_note() {
+        assert!(sess("looop-x", Some("help")).flagged());
+        assert!(!sess("looop-x", Some("")).flagged());
+        assert!(!sess("looop-x", None).flagged());
+    }
 }

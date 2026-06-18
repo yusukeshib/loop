@@ -1,6 +1,6 @@
 [package]
 name = "looop"
-version = "0.11.1"
+version = "0.12.0"
 edition = "2024"
 description = "A tiny, portable, Kubernetes-shaped control loop for your work"
 license = "MIT"
@@ -22,7 +22,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # default-features = false drops the `upgrade` feature (self_update), keeping
 # the network stack out of looop.
 babysit = { version = "0.10", default-features = false }
-tokio = { version = "1", features = ["rt"] }
+# `attach` needs the IO + time drivers (control socket + PTY) and signal
+# handling at runtime; list/prune only need `rt`.
+tokio = { version = "1", features = ["rt", "net", "time", "io-util", "signal"] }
 
 [profile.release]
 strip = true
