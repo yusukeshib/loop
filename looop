@@ -54,6 +54,11 @@
 #      once it actually hurts. Never build machinery in advance.
 #   6. LEVEL-TRIGGERED. Each tick re-observes from scratch; the loop keeps no
 #      "what I was waiting for" state. Re-running after days off is just a tick.
+#   7. SINGLE-WRITER POLICY FILES. The pulse (the tick AI) is the sole writer of
+#      PLAYBOOK.md, goals/ and sensors/. Workers write only to claims/, reports/
+#      and their own code sandbox — never racing the pulse on policy files. The
+#      lone exception is a human-gated meta session (setup / playbook grooming),
+#      which shows a diff and waits for approval (RULE 3) before touching policy.
 #
 # -----------------------------------------------------------------------------
 # CODE / CONFIG / DATA are cleanly separated (all overridable by env)
@@ -64,7 +69,8 @@
 #   DATA    ${XDG_STATE_HOME:-~/.local/state}/looop/        the git-tracked memory
 #           └ override with $LOOOP_DATA_DIR
 #             PLAYBOOK.md  goals/  journal.md  sensors/*.sh   ← commit these
-#             snapshots/  prompts/  .lock  .last-tick-hash  paused  ← scratch (gitignored)
+#             snapshots/ prompts/ runs/ .lock .last-tick-hash paused ← scratch (gitignored)
+#             (runs/<id>/{prompt.md,output.log} = a replayable archive per beat)
 #
 # SUBCOMMANDS
 #   looop                run the pulse (default; foreground, Ctrl-C to stop)
@@ -95,7 +101,7 @@
 set -euo pipefail
 shopt -s nullglob
 
-LOOOP_VERSION="0.9.1"
+LOOOP_VERSION="0.10.0"
 
 # ---- paths -------------------------------------------------------------------
 self="${BASH_SOURCE[0]}"
@@ -127,6 +133,9 @@ GOALS_DIR="$LOOOP_DATA_DIR/goals"               # desired state
 JOURNAL="$LOOOP_DATA_DIR/journal.md"            # action log
 LOCK="$LOOOP_DATA_DIR/.lock"
 SNAPSHOTS_DIR="$LOOOP_DATA_DIR/snapshots"        # per-tick sensor output (scratch: wiped each tick)
+RUNS_DIR="$LOOOP_DATA_DIR/runs"                  # per-tick archive (scratch): runs/<id>/{prompt.md,output.log}
+                                                 # so a past beat is REPLAYABLE (what the AI saw + decided);
+                                                 # tick.log keeps only the latest. Pruned to LOOOP_RUNS_KEEP.
 CLAIMS_DIR="$LOOOP_DATA_DIR/claims"              # worker leases (scratch): claims/<name>.json with a
                                                  # .session field; the pulse reaps dead ones & surfaces
                                                  # live ones, but never interprets the rest (ownership
@@ -170,13 +179,43 @@ _hash() {
 # disables). Args: script outfile errfile. Returns the sensor's exit status
 # (124 = timed out, per coreutils).
 _sensor_exec() {  # script outfile errfile
-  local to="${LOOOP_SENSOR_TIMEOUT:-60}" tbin=""
+  local to="${LOOOP_SENSOR_TIMEOUT:-60}" tbin="" rc
   if [ "$to" != 0 ]; then
     if command -v timeout >/dev/null 2>&1; then tbin=timeout
     elif command -v gtimeout >/dev/null 2>&1; then tbin=gtimeout; fi
   fi
-  if [ -n "$tbin" ]; then "$tbin" "$to" "$1" >"$2" 2>"$3"
-  else "$1" >"$2" 2>"$3"; fi
+  if [ -n "$tbin" ]; then "$tbin" "$to" "$1" >"$2" 2>"$3"; rc=$?
+  else "$1" >"$2" 2>"$3"; rc=$?; fi
+  # Context backpressure: a sensor MUST emit a small, normalized snapshot — every
+  # reading is cat'd into the tick prompt verbatim, so an oversized blob silently
+  # inflates context + LLM cost on EVERY beat (and there is no summarization). If
+  # a successful reading exceeds the cap, replace it with a tiny error object: the
+  # pulse stops paying for the blob, and the AI sees the misbehavior and can fix
+  # the sensor. Cap: LOOOP_SENSOR_MAX_BYTES (default 8192; 0 = no cap).
+  local cap="${LOOOP_SENSOR_MAX_BYTES:-8192}" sz
+  if [ "$rc" -eq 0 ] && [ "$cap" != 0 ]; then
+    sz=$(wc -c < "$2" 2>/dev/null | tr -d ' ')
+    if [ -n "$sz" ] && [ "$sz" -gt "$cap" ]; then
+      jq -cn --argjson b "$sz" --argjson c "$cap" \
+        '{error:"sensor output too large — emit a small normalized {signal,detail} snapshot, not a raw dump",bytes:$b,cap:$c}' > "$2" 2>/dev/null \
+        || printf '{"error":"sensor output too large","bytes":%s,"cap":%s}\n' "$sz" "$cap" > "$2"
+    fi
+  fi
+  return "$rc"
+}
+
+# Keep the per-tick run archive (runs/<id>/) bounded: retain the newest
+# LOOOP_RUNS_KEEP runs (default 50; 0 = keep all), reap the rest. Host-local
+# scratch (gitignored); this only trims replay history, never live state.
+_prune_runs() {
+  local keep="${LOOOP_RUNS_KEEP:-50}"
+  [ "$keep" = 0 ] && return 0
+  [ -d "$RUNS_DIR" ] || return 0
+  local d
+  # shellcheck disable=SC2012  # newest-first by mtime; run-id dirs have no newlines
+  ls -1dt "$RUNS_DIR"/*/ 2>/dev/null | tail -n +"$((keep + 1))" | while IFS= read -r d; do
+    rm -rf "$d"
+  done
 }
 
 # Prefix for human-facing `babysit ...` hints. On a non-default profile the
@@ -272,7 +311,7 @@ JSON
 # written by the bootstrap setup session, not seeded.
 ensure_dirs() {
   mkdir -p "$(dirname "$CONFIG")" "$SENSORS_DIR" "$SNAPSHOTS_DIR" "$CLAIMS_DIR" "$REPORTS_DIR" \
-           "$GOALS_DIR/archive" "$LOOOP_DATA_DIR/prompts"
+           "$RUNS_DIR" "$GOALS_DIR/archive" "$LOOOP_DATA_DIR/prompts"
   [ -f "$CONFIG" ] || default_config > "$CONFIG"
   # Fresh data dir (no PLAYBOOK yet) → lay down the embedded starter seed once.
   [ -f "$PLAYBOOK" ] || seed_data
@@ -281,6 +320,7 @@ ensure_dirs() {
     cat > "$LOOOP_DATA_DIR/.gitignore" <<'GI'
 snapshots/
 prompts/
+runs/
 claims/
 reports/
 .lock/
@@ -435,7 +475,9 @@ Cover at least:
 - What work should this loop watch over and push forward day to day?
 - Which sources define "the world"? (GitHub / Linear / Grafana / …) For each,
   what to observe, and is the CLI/token available? You WRITE the sensor scripts
-  yourself into ./sensors/ — each just prints ONE JSON object to stdout.
+  yourself into ./sensors/ — each prints ONE small, normalized JSON object to
+  stdout (keep it tiny; park volatile fields under a "detail" key and the
+  move-triggering state under "signal" so noise doesn't wake the loop).
 - Priorities when several things compete (ordered).
 - What is irreversible and must never happen without my approval?
 - Which code repos will workers touch? (note where each is cloned locally, and
@@ -539,9 +581,21 @@ world_hash() {
     # hash each input behind a path marker so file boundaries are unambiguous
     # (and an empty glob just contributes nothing instead of blocking on stdin)
     local f
-    for f in "$PLAYBOOK" "$GOALS_DIR"/*.md "$SNAPSHOTS_DIR"/*.json; do
+    for f in "$PLAYBOOK" "$GOALS_DIR"/*.md; do
       [ -f "$f" ] || continue
       printf '@@ %s\n' "${f#"$LOOOP_DATA_DIR"/}"; cat "$f"
+    done
+    # Sensor snapshots: hash only the wake SIGNAL, not volatile detail. A sensor
+    # may split its reading into {"signal":…,"detail":…}; only .signal feeds the
+    # hash, so flapping counts / timestamps parked under .detail don't burn an
+    # LLM call — while the FULL object still reaches the prompt as context. A
+    # sensor with no "signal" key is hashed whole (back-compat: the whole reading
+    # is the signal). jq -S canonicalizes (sorted keys), so mere key reordering
+    # never wakes the loop; non-JSON / error readings fall back to raw bytes.
+    for f in "$SNAPSHOTS_DIR"/*.json; do
+      [ -f "$f" ] || continue
+      printf '@@ %s\n' "${f#"$LOOOP_DATA_DIR"/}"
+      jq -cS 'if (type=="object" and has("signal")) then .signal else . end' "$f" 2>/dev/null || cat "$f"
     done
     # worker sessions (id prefixed 'looop-'). Hash only the STABLE signal —
     # id/state/exit_code/flag-note — NOT the ever-incrementing age column, so a
@@ -579,8 +633,13 @@ ONE move — the single most important one — and stop.
 Moves:
 - do a small reversible action directly (gh commands, drafts, queries)
 - create / update / archive a goal (files in goals/; archive = move to goals/archive/)
-- write or adjust an sensor script in sensors/ (each just prints one JSON object
-  to stdout) when you need a new view of the world; it runs from next tick
+- write or adjust an sensor script in sensors/ when you need a new view of the
+  world; it runs from next tick. CONTRACT: print ONE small, NORMALIZED JSON
+  object to stdout (capped ~8KB — it is cat'd into this prompt every beat, so a
+  raw dump inflates context + cost). To avoid waking the loop on noise, split
+  volatile fields out: {"signal":{… only the state that should trigger a move…},
+  "detail":{… counts/timestamps/extra context…}} — only .signal feeds the
+  change-detection hash, while the whole object still reaches this prompt.
 - start a worker session for hands-on work (runs an agent under babysit, in the
   data dir):
     $LOOOP_BIN start-session <id> "<detailed prompt for the worker>"
@@ -720,24 +779,28 @@ tick() {
   fi
 
   # 3. hand everything to the AI for one move
-  local runner tick_cmd prompt
+  local runner tick_cmd prompt cost_id run_dir
   runner="$(cfg '.default')"
   tick_cmd="$(jq -r --arg r "$runner" '.runners[$r].tick' "$CONFIG")"
-  prompt="$(mktemp)"
+  # Archive this beat's exact prompt + output under runs/<id>/ so it is
+  # REPLAYABLE later ("what did the AI see and decide at 14:32?"). The run id
+  # doubles as the cost-ledger id, tying spend to a replayable transcript.
+  cost_id="tick-$(date +%Y%m%d-%H%M%S)"
+  run_dir="$RUNS_DIR/$cost_id"; mkdir -p "$run_dir"
+  prompt="$run_dir/prompt.md"
   build_prompt > "$prompt"
 
   t0=$SECONDS
   log "${c_cyan}╭─ ${c_b}deciding the one move${c_rst}${c_cyan} ─${c_rst} ${c_dim}$runner is thinking (its output follows)…${c_rst}"
-  local cost_id; cost_id="tick-$(date +%Y%m%d-%H%M%S)"
   export LOOOP_COST_KIND=tick LOOOP_COST_RUNNER="$runner" LOOOP_COST_ID="$cost_id"
-  if ( cd "$LOOOP_DATA_DIR" && eval "$tick_cmd" < "$prompt" ) 2>&1 | ts_prefix "${c_cyan}│${c_rst} " | tee "$LOOOP_DATA_DIR/tick.log"; then
+  if ( cd "$LOOOP_DATA_DIR" && eval "$tick_cmd" < "$prompt" ) 2>&1 | ts_prefix "${c_cyan}│${c_rst} " | tee "$run_dir/output.log" "$LOOOP_DATA_DIR/tick.log"; then
     printf '%s\n' "$hash" > "$LOOOP_DATA_DIR/.last-tick-hash"
     TICK_ACTED=1
     log "${c_cyan}╰─ ${c_grn}✓ decided${c_rst} ${c_dim}in $((SECONDS - t0))s · journal: $(tail -1 "$JOURNAL" 2>/dev/null || echo '(no line)')${c_rst}"
   else
-    log "${c_cyan}╰─ ${c_red}✗ tick FAILED${c_rst} ${c_dim}after $((SECONDS - t0))s (see tick.log)${c_rst}"
+    log "${c_cyan}╰─ ${c_red}✗ tick FAILED${c_rst} ${c_dim}after $((SECONDS - t0))s (replay: $run_dir)${c_rst}"
   fi
-  rm -f "$prompt"
+  _prune_runs
   surface_attention
 }
 
@@ -867,19 +930,24 @@ cmd_run_goal() {
     [ -s "$SNAPSHOTS_DIR/sensor-$name.err" ] || rm -f "$SNAPSHOTS_DIR/sensor-$name.err"
   done
 
-  local runner tick_cmd prompt t0
+  local runner tick_cmd prompt t0 run_id run_dir
   runner="$(cfg '.default')"
   tick_cmd="$(jq -r --arg r "$runner" '.runners[$r].tick' "$CONFIG")"
-  prompt="$(mktemp)"
+  # Archive this manual run's prompt + output for replay, same as a tick. The
+  # cost id stays the goal id (spend is attributed per goal); the archive id is
+  # timestamped so repeated manual runs of one goal don't clobber each other.
+  run_id="run-$id-$(date +%Y%m%d-%H%M%S)"
+  run_dir="$RUNS_DIR/$run_id"; mkdir -p "$run_dir"
+  prompt="$run_dir/prompt.md"
   build_prompt "$id" > "$prompt"
   t0=$SECONDS
   log "${c_cyan}${c_b}manual run — goal '$id'${c_rst} ${c_dim}($runner is thinking; its output follows)${c_rst}…"
   log "${c_dim}┌─ $runner ──────────────────────────────────────${c_rst}"
   export LOOOP_COST_KIND=goal LOOOP_COST_RUNNER="$runner" LOOOP_COST_ID="$id"
-  ( cd "$LOOOP_DATA_DIR" && eval "$tick_cmd" < "$prompt" ) 2>&1 | ts_prefix | tee "$LOOOP_DATA_DIR/tick.log"
+  ( cd "$LOOOP_DATA_DIR" && eval "$tick_cmd" < "$prompt" ) 2>&1 | ts_prefix | tee "$run_dir/output.log" "$LOOOP_DATA_DIR/tick.log"
   log "${c_dim}└────────────────────────────────────────${c_rst}"
-  log "${c_grn}✓ run done${c_rst} in $((SECONDS - t0))s ${c_dim}— journal: $(tail -1 "$JOURNAL" 2>/dev/null || echo '(no line)')${c_rst}"
-  rm -f "$prompt"
+  log "${c_grn}✓ run done${c_rst} in $((SECONDS - t0))s ${c_dim}— journal: $(tail -1 "$JOURNAL" 2>/dev/null || echo '(no line)') · replay: $run_dir${c_rst}"
+  _prune_runs
   surface_attention
 }
 
@@ -937,9 +1005,19 @@ cmd_start_session() {
   Delete claims/<name>.json the instant the task is fully done, right before the
   kill above. If you crash the pulse auto-reaps your claim; on a clean finish YOU
   delete it. NEVER sit/sleep/poll while holding a claim — act and move on.
-- WORKSPACE: you start in the loop data dir. That is ONLY for meta work
-  (PLAYBOOK / goals / sensors). If your task touches a code repo, provision your
-  OWN sandbox FIRST and cd into it — never edit code in the data dir:
+- SINGLE-WRITER DATA DIR: the pulse (the tick AI) is the SOLE writer of the
+  policy files — PLAYBOOK.md, goals/ and sensors/. By default you write ONLY to
+  claims/ (your lease), reports/ (deliverables) and your own code sandbox. Do
+  NOT edit PLAYBOOK/goals/sensors: a concurrent tick reads them every beat, so a
+  racing writer tears the loop's state. If your task implies a policy change,
+  write the proposal to reports/<id>.md and raise a flag — the human (or the
+  next tick) applies it. EXCEPTION: if your task is explicitly a meta task (e.g.
+  setup or playbook grooming), you MAY edit those files, but you MUST show the
+  diff and `babysit flag` for human approval BEFORE writing. When unsure whether
+  your task is meta, treat the data dir as read-only and propose via reports/.
+- WORKSPACE: you start in the loop data dir (read-only context for you, save the
+  meta exception above). If your task touches a code repo, provision your OWN
+  sandbox FIRST and cd into it — never edit code in the data dir:
     • if \`box\` is available:  box new $session --repo <repo> && cd "\$(box switch $session)"
     • otherwise (git):         git -C <local-clone> worktree add /tmp/$session -b looop/$session && cd /tmp/$session
   (the PLAYBOOK names the repos and which to prefer.)
