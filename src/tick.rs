@@ -244,3 +244,32 @@ pub fn cmd_tick(paths: &Paths) -> Result<ExitCode> {
     tick(paths);
     Ok(ExitCode::SUCCESS)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tick_cost_reads_matching_ledger_row() {
+        let p = Paths::temp();
+        fs::write(
+            p.cost_ledger(),
+            concat!(
+                r#"{"ts":"t","kind":"tick","id":"tick-A","runner":"pi","cost_usd":0.0123}"#,
+                "\n",
+                r#"{"ts":"t","kind":"tick","id":"tick-B","runner":"pi","cost_usd":0.0456}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(tick_cost(&p, "tick-B"), Some(0.0456));
+        assert_eq!(tick_cost(&p, "tick-A"), Some(0.0123));
+        assert_eq!(tick_cost(&p, "tick-missing"), None);
+    }
+
+    #[test]
+    fn tick_cost_none_without_ledger() {
+        let p = Paths::temp();
+        assert_eq!(tick_cost(&p, "tick-X"), None);
+    }
+}
