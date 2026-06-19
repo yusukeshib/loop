@@ -77,18 +77,10 @@ fn build(paths: &Paths) -> serde_json::Value {
         })
         .collect();
 
-    let attention: Vec<String> = fs::read_to_string(paths.data_dir.join("attention.md"))
-        .unwrap_or_default()
-        .lines()
-        .map(str::to_owned)
-        .filter(|l| !l.is_empty())
-        .collect();
-
     serde_json::json!({
         "pulse": { "running": running, "pid": pid, "interval_s": idle },
         "last_tick": { "at": last_at, "hash": last_hash },
         "workers": workers,
-        "attention": attention,
         "cost_today_usd": cost_today(paths),
         "data_dir": paths.data_dir.to_string_lossy(),
     })
@@ -134,13 +126,6 @@ pub fn cmd_status(paths: &Paths, args: &[String]) -> Result<ExitCode> {
             w["state"].as_str().unwrap_or("?"),
             flag
         );
-    }
-    let att = s["attention"].as_array().cloned().unwrap_or_default();
-    if !att.is_empty() {
-        println!("attention:");
-        for a in att {
-            println!("  {}", a.as_str().unwrap_or(""));
-        }
     }
     println!(
         "cost today: ${:.4}",

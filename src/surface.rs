@@ -1,7 +1,9 @@
 //! Surface everything that needs the human, ON the loop pane. No OS
 //! notifications: we live in tmux, so a flagged worker pops a dedicated tmux
-//! window. attention.md is reserved for genuine blockers; worker flags are
-//! shown inline.
+//! window. The ONLY persistent human channel is a worker ⚑flag (session-backed:
+//! the reply flows into its stdin). A sessionless notice from the pulse is just
+//! the decider's `send_notification` action — journaled + shown on the tick
+//! line — so there is no separate attention.md state to read here.
 
 use crate::events;
 use crate::paths::Paths;
@@ -21,17 +23,7 @@ pub fn surface_attention(paths: &Paths) {
         .map(|s| (s.id.clone(), s.note.clone().unwrap_or_default()))
         .collect();
 
-    let att = fs::read_to_string(paths.data_dir.join("attention.md"))
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(|s| {
-            s.lines()
-                .map(|l| format!("  {l}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        });
-
-    if flagged.is_empty() && att.is_none() {
+    if flagged.is_empty() {
         return;
     }
 
@@ -45,15 +37,8 @@ pub fn surface_attention(paths: &Paths) {
         util::event(
             util::Level::Warn,
             "attention",
-            &format!(
-                "{} flagged · attention.md: {}",
-                flagged.len(),
-                att.is_some()
-            ),
-            &[
-                ("flags", serde_json::json!(flags_json)),
-                ("attention", serde_json::json!(att.is_some())),
-            ],
+            &format!("{} flagged", flagged.len()),
+            &[("flags", serde_json::json!(flags_json))],
         );
     } else {
         util::log(&format!(
@@ -62,9 +47,6 @@ pub fn surface_attention(paths: &Paths) {
             util::b(),
             util::rst()
         ));
-        if let Some(att) = &att {
-            println!("{att}");
-        }
         for (id, note) in &flagged {
             println!("  ⚑ {id}\n     {note}\n     → {lhd}looop attach {id}");
         }
@@ -73,10 +55,7 @@ pub fn surface_attention(paths: &Paths) {
     events::emit(
         paths,
         "needs_you",
-        serde_json::json!({
-            "flags": flagged.len(),
-            "attention": att.is_some(),
-        }),
+        serde_json::json!({ "flags": flagged.len() }),
     );
 
     tmux_surface(paths);

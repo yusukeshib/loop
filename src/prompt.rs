@@ -61,6 +61,14 @@ Pick exactly ONE `action` and fill its fields:
   {"action":"send_key","id":"<worker>","keys":["Enter"]}   named keys (Enter, C-c)
   {"action":"restart_session","id":"<worker>"}            restart a wedged worker
 
+  {"action":"send_notification","message":"<what the human must know / decide>"}
+     Surface a blocker or notice to the human — journaled and shown on this
+     tick's line. Use when YOU, the pulse, are blocked on a human and the fix is
+     the human editing the world (a goal, the PLAYBOOK, creds, a priority call),
+     which the next tick observes. There is NO reply channel and NO state kept:
+     for a question whose answer must flow back INTO running work, start a
+     worker that prepares it and ⚑flags instead.
+
   {"action":"write_playbook","body":"<full PLAYBOOK.md contents>"}
      Change your own judgment / guardrails. Deliberate — only harden a drift into
      a rule once it actually hurts.
