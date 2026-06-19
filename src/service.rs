@@ -28,16 +28,16 @@ pub fn cmd_up(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     let watch = args.iter().any(|a| a == "--watch" || a == "-w");
     let json = args.iter().any(|a| a == "--json");
 
-    if babysit::is_alive(PULSE_SESSION) {
+    if babysit::is_alive(paths, PULSE_SESSION) {
         println!("looop: pulse already running ({PULSE_SESSION}) — see it: looop ls");
         if watch {
             println!("looop: watching {PULSE_SESSION} (Ctrl-C to stop watching)");
-            babysit::watch(PULSE_SESSION)?;
+            babysit::watch(paths, PULSE_SESSION)?;
         }
         return Ok(ExitCode::SUCCESS);
     }
-    if babysit::status_exists(PULSE_SESSION) {
-        babysit::prune(); // reuse the id held by a dead corpse
+    if babysit::status_exists(paths, PULSE_SESSION) {
+        babysit::prune(paths); // reuse the id held by a dead corpse
     }
 
     // Propagate the output format to the detached pulse: spawn_detached re-execs
@@ -51,7 +51,7 @@ pub fn cmd_up(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     // supervisor, which spawns this command under a PTY. `_pulse` then runs the
     // real loop (and takes the single-instance lock inside cmd_run).
     let bin = paths.bin.to_string_lossy().to_string();
-    babysit::spawn_detached(vec![bin, "_pulse".to_string()], PULSE_SESSION)?;
+    babysit::spawn_detached(paths, vec![bin, "_pulse".to_string()], PULSE_SESSION)?;
 
     println!(
         "looop: pulse started ({PULSE_SESSION}){}",
@@ -62,7 +62,7 @@ pub fn cmd_up(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     println!("  stop:  {}looop down", paths.looop_hint_env());
     if watch {
         println!("looop: watching {PULSE_SESSION} (Ctrl-C to stop watching)");
-        babysit::watch(PULSE_SESSION)?;
+        babysit::watch(paths, PULSE_SESSION)?;
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -70,14 +70,14 @@ pub fn cmd_up(paths: &Paths, args: &[String]) -> Result<ExitCode> {
 /// `looop down` — stop the pulse service. The single-instance lock left behind
 /// is stale-reclaimed on the next `looop up` (cmd_run checks pid liveness), so
 /// no extra cleanup is needed here.
-pub fn cmd_down(_paths: &Paths) -> Result<ExitCode> {
-    if !babysit::status_exists(PULSE_SESSION) {
+pub fn cmd_down(paths: &Paths) -> Result<ExitCode> {
+    if !babysit::status_exists(paths, PULSE_SESSION) {
         println!("looop: no pulse session to stop");
         return Ok(ExitCode::SUCCESS);
     }
-    match babysit::kill(PULSE_SESSION) {
+    match babysit::kill(paths, PULSE_SESSION) {
         Ok(()) => {
-            babysit::prune();
+            babysit::prune(paths);
             println!("looop: pulse stopped");
             Ok(ExitCode::SUCCESS)
         }

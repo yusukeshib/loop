@@ -77,10 +77,13 @@ Usage:
 Paths (override via env LOOOP_CONFIG / LOOOP_DATA_DIR):
   config  {config}
   data    {data}
+  fleet   {fleet}
 
 looop is a single self-contained binary: the worker fleet (babysit) is linked
 as a LIBRARY and driven entirely in-process — no `babysit` executable required.
-looop scopes the fleet to this profile automatically.
+The fleet is self-contained per profile: sessions live under <data>/sessions,
+keyed by a bare id (the pulse is `pulse`). looop passes that root to the library
+explicitly — it never sets $BABYSIT_DIR and never touches a shared ~/.babysit.
   looop ls                      list worker sessions (⚑ = waiting for you)
   looop ls --watch              watch the fleet live, in place
   looop attach <id>             enter a waiting session and talk to it
@@ -94,5 +97,6 @@ Fix judgment by editing PLAYBOOK.md (in the data dir) and committing — it take
 effect next tick."#,
         config = paths.config.display(),
         data = paths.data_dir.display(),
+        fleet = paths.data_dir.join("sessions").display(),
     );
 }

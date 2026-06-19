@@ -7,17 +7,11 @@ __looop_data_dir() {
     print -r -- "${LOOOP_DATA_DIR:-$default}"
 }
 
-# Resolve the babysit fleet root the same way paths.rs does: a non-default
-# profile (distinct LOOOP_DATA_DIR) gets its own <data>/babysit root; the
-# default profile honors $BABYSIT_DIR, else ~/.babysit.
-__looop_babysit_root() {
+# Resolve the session-fleet dir the same way paths.rs does: sessions live at
+# <LOOOP_DATA_DIR>/sessions/<id> (the fleet root is the data dir itself).
+__looop_sessions_dir() {
     local default="${XDG_STATE_HOME:-$HOME/.local/state}/looop"
-    local data="${LOOOP_DATA_DIR:-$default}"
-    if [[ "$data" != "$default" ]]; then
-        print -r -- "$data/babysit"
-    else
-        print -r -- "${BABYSIT_DIR:-$HOME/.babysit}"
-    fi
+    print -r -- "${LOOOP_DATA_DIR:-$default}/sessions"
 }
 
 # Goal ids = goals/<id>.md basenames (also goals/archive/<id>.md).
@@ -33,14 +27,14 @@ __looop_goals() {
     (( ${#goals} )) && _describe 'goal' goals
 }
 
-# Worker session ids = looop-* under the babysit fleet root, minus the pulse.
+# Worker session ids = session dirs, minus the pulse.
 __looop_workers() {
     local -a workers
-    local root s name
-    root=$(__looop_babysit_root)
-    for s in "$root"/sessions/looop-*(N/); do
+    local dir s name
+    dir=$(__looop_sessions_dir)
+    for s in "$dir"/*(N/); do
         name=${s:t}
-        [[ "$name" == "looop-pulse" ]] && continue
+        [[ "$name" == "pulse" ]] && continue
         [[ -n "$name" ]] && workers+=("$name")
     done
     (( ${#workers} )) && _describe 'worker' workers
@@ -49,9 +43,9 @@ __looop_workers() {
 # Like __looop_workers but also includes the pulse (for read/observe verbs).
 __looop_sessions() {
     local -a sessions
-    local root s name
-    root=$(__looop_babysit_root)
-    for s in "$root"/sessions/looop-*(N/); do
+    local dir s name
+    dir=$(__looop_sessions_dir)
+    for s in "$dir"/*(N/); do
         name=${s:t}
         [[ -n "$name" ]] && sessions+=("$name")
     done

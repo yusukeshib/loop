@@ -78,7 +78,7 @@ pub fn world_hash(paths: &Paths) -> String {
 
     // Worker sessions: stable signal only (id state exit_code note), null-faithful.
     // Workers only — the pulse's own session must not feed its own wake signal.
-    for s in babysit::list_workers() {
+    for s in babysit::list_workers(paths) {
         let exit = s
             .exit_code
             .map(|c| c.to_string())

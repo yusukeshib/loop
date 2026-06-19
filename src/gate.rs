@@ -15,7 +15,7 @@ pub fn reap_stale_claims(paths: &Paths) {
     if !dir.is_dir() {
         return;
     }
-    let alive: Vec<String> = babysit::list()
+    let alive: Vec<String> = babysit::list(paths)
         .into_iter()
         .filter(|s| s.alive)
         .map(|s| s.id)

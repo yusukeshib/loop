@@ -13,12 +13,12 @@ use std::process::{Command, Stdio};
 pub fn surface_attention(paths: &Paths) {
     let lhd = paths.looop_hint_env();
 
-    let flags: Vec<String> = babysit::list_workers()
+    let flags: Vec<String> = babysit::list_workers(paths)
         .into_iter()
         .filter(|s| s.flagged())
         .map(|s| {
             let note = s.note.clone().unwrap_or_default();
-            let short = s.id.strip_prefix("looop-").unwrap_or(&s.id);
+            let short = s.id.as_str();
             format!(
                 "  ⚑ {id}\n     {note}\n     → {lhd}looop attach {short}",
                 id = s.id
@@ -79,7 +79,7 @@ fn tmux_surface(paths: &Paths) {
         return; // no server running
     }
 
-    let flagged_ids: Vec<String> = babysit::list_workers()
+    let flagged_ids: Vec<String> = babysit::list_workers(paths)
         .into_iter()
         .filter(|s| s.flagged())
         .map(|s| s.id)
@@ -106,7 +106,7 @@ fn tmux_surface(paths: &Paths) {
         if seen.contains(id) {
             continue;
         }
-        let short = id.strip_prefix("looop-").unwrap_or(id);
+        let short = id.as_str();
         let wname = format!("⚑{short}");
         if existing.iter().any(|w| *w == wname) {
             continue;

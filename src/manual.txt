@@ -62,6 +62,8 @@ CODE / CONFIG / DATA are cleanly separated (all overridable by env)
           └ override with $LOOOP_DATA_DIR
             PLAYBOOK.md  goals/  journal.md  sensors/*.sh   <- commit these
             snapshots/ prompts/ runs/ .lock .last-tick-hash <- scratch
+            sessions/<id>/  <- the worker + pulse fleet (babysit state, per
+                               profile; no $BABYSIT_DIR, no shared ~/.babysit)
             (runs/<id>/{prompt.md,output.log} = a replayable archive per beat)
 
 BOOTSTRAP

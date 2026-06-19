@@ -5,17 +5,11 @@ __looop_data_dir() {
     printf '%s' "${LOOOP_DATA_DIR:-$default}"
 }
 
-# Resolve the babysit fleet root the same way paths.rs does: a non-default
-# profile (distinct LOOOP_DATA_DIR) gets its own <data>/babysit root; the
-# default profile honors $BABYSIT_DIR, else ~/.babysit.
-__looop_babysit_root() {
+# Resolve the session-fleet dir the same way paths.rs does: sessions live at
+# <LOOOP_DATA_DIR>/sessions/<id> (the fleet root is the data dir itself).
+__looop_sessions_dir() {
     local default="${XDG_STATE_HOME:-$HOME/.local/state}/looop"
-    local data="${LOOOP_DATA_DIR:-$default}"
-    if [[ "$data" != "$default" ]]; then
-        printf '%s' "$data/babysit"
-    else
-        printf '%s' "${BABYSIT_DIR:-$HOME/.babysit}"
-    fi
+    printf '%s' "${LOOOP_DATA_DIR:-$default}/sessions"
 }
 
 _looop() {
@@ -26,9 +20,9 @@ _looop() {
 
     # session ids including the pulse (for read/observe verbs)
     __looop_session_list() {
-        local root s name out=""
-        root=$(__looop_babysit_root)
-        for s in "$root"/sessions/looop-*/; do
+        local dir s name out=""
+        dir=$(__looop_sessions_dir)
+        for s in "$dir"/*/; do
             [[ -d "$s" ]] || continue
             name=$(basename "$s")
             [[ -n "$name" ]] && out+=" $name"
@@ -59,12 +53,12 @@ _looop() {
             ;;
         attach|kill|flag|unflag|restart)
             if [[ $cword -eq 2 ]]; then
-                local root workers="" s name
-                root=$(__looop_babysit_root)
-                for s in "$root"/sessions/looop-*/; do
+                local dir workers="" s name
+                dir=$(__looop_sessions_dir)
+                for s in "$dir"/*/; do
                     [[ -d "$s" ]] || continue
                     name=$(basename "$s")
-                    [[ "$name" == "looop-pulse" ]] && continue
+                    [[ "$name" == "pulse" ]] && continue
                     [[ -n "$name" ]] && workers+=" $name"
                 done
                 COMPREPLY=($(compgen -W "$workers" -- "$cur"))

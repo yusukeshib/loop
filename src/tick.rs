@@ -18,7 +18,7 @@ pub fn tick(paths: &Paths) -> bool {
     events::emit(paths, "tick_start", serde_json::json!({}));
 
     // 0. housekeeping (deterministic, no AI).
-    babysit::prune();
+    babysit::prune(paths);
     gate::reap_stale_claims(paths);
 
     // 1. sense — level-triggered: wipe last beat's snapshots first.

@@ -76,7 +76,7 @@ pub fn cmd_run(paths: &Paths) -> Result<ExitCode> {
             ("runner", serde_json::json!(runner_name)),
         ],
     );
-    if paths.babysit_dir.is_some() {
+    if !paths.default_profile {
         util::event(
             Level::Info,
             "pulse.profile",
@@ -95,7 +95,7 @@ pub fn cmd_run(paths: &Paths) -> Result<ExitCode> {
         let acted = tick::tick(paths);
         let mut want = if acted {
             busy
-        } else if babysit::any_worker_alive() {
+        } else if babysit::any_worker_alive(paths) {
             active
         } else {
             idle
@@ -122,7 +122,7 @@ pub fn cmd_run(paths: &Paths) -> Result<ExitCode> {
         }
         let reason = if acted {
             "busy"
-        } else if babysit::any_worker_alive() {
+        } else if babysit::any_worker_alive(paths) {
             "active"
         } else {
             "idle"
@@ -192,7 +192,7 @@ pub fn cmd_run_goal(paths: &Paths, id: &str) -> Result<ExitCode> {
         }
     }
 
-    babysit::prune();
+    babysit::prune(paths);
     gate::reap_stale_claims(paths);
 
     // Private snapshots dir so a concurrent pulse tick can't tear our readings.

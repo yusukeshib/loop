@@ -174,17 +174,21 @@ looop help
 Runtime deps: just an LLM runner (`pi` or `claude`). The worker fleet (babysit)
 is linked as a **library** and driven entirely in-process — spawn, list, attach,
 kill, flag, prune all run inside `looop`, so **no `babysit` binary is required**.
-(Workers that touch code also need `git` or `box` to sandbox themselves, but
-that's a worker concern, not a prerequisite for the pulse.)
+looop hands the library an explicit state root (`$LOOOP_DATA_DIR/sessions`), so
+it never sets `$BABYSIT_DIR` and never shares the global `~/.babysit`; session
+ids are bare (the pulse is `pulse`). (Workers that touch code also need `git` or
+`box` to sandbox themselves, but that's a worker concern, not a prerequisite for
+the pulse.)
 
 ## Config & data
 
 - **Config** — `$XDG_CONFIG_HOME/looop.json` (override `LOOOP_CONFIG`). One file:
   runner wiring and tick cadence. Default runner is `pi`; `claude` is built in.
 - **Data / memory** — `$XDG_STATE_HOME/looop/` (override `LOOOP_DATA_DIR`). A git
-  repo holding the PLAYBOOK, goals, journal, and sensors. Pointing
-  `LOOOP_DATA_DIR` elsewhere gives you an isolated **profile** with its own
-  worker fleet.
+  repo holding the PLAYBOOK, goals, journal, and sensors. The worker + pulse
+  fleet lives under `sessions/` in the same dir, so a profile is fully
+  self-contained. Pointing `LOOOP_DATA_DIR` elsewhere gives you an isolated
+  **profile** with its own fleet.
 
 LLM spend is metered automatically (ticks, manual runs, and self-reporting
 workers) into an append-only ledger; see `looop cost`.

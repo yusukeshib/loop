@@ -99,7 +99,7 @@ fn main() -> ExitCode {
         "detach" => deps::require_deps(&paths).and_then(|_| session::cmd_detach(&paths, rest)),
         // Hidden: the headless pulse body babysit wraps under a PTY (`looop up`).
         "_pulse" => deps::require_deps(&paths).and_then(|_| service::cmd_pulse(&paths)),
-        "ls" => deps::require_deps(&paths).and_then(|_| ls_inproc(rest)),
+        "ls" => deps::require_deps(&paths).and_then(|_| ls_inproc(&paths, rest)),
         "status" => status::cmd_status(&paths, rest),
         "start-session" => {
             deps::require_deps(&paths).and_then(|_| session::cmd_start_session(&paths, rest))
@@ -172,15 +172,15 @@ fn export_env(paths: &Paths) {
     set("CLAIMS_DIR", paths.claims_dir().as_os_str());
     set("REPORTS_DIR", paths.reports_dir().as_os_str());
     set("COST_LEDGER", paths.cost_ledger().as_os_str());
-    if let Some(bd) = &paths.babysit_dir {
-        set("BABYSIT_DIR", bd.as_os_str());
-    }
+    // NB: no $BABYSIT_DIR. looop never configures the babysit library through the
+    // environment — it passes an explicit context (`paths.sessions()`) to every
+    // call, and the detached worker receives its root via `--root`.
 }
 
 /// `looop ls [--json] [--watch] [--interval <dur>]` — render the fleet table
 /// IN-PROCESS via the babysit library (no `babysit` binary). Parses the same
 /// flags babysit ls accepts.
-fn ls_inproc(rest: &[String]) -> Result<ExitCode> {
+fn ls_inproc(paths: &Paths, rest: &[String]) -> Result<ExitCode> {
     let mut json = false;
     let mut watch = false;
     let mut interval = "2s".to_string();
@@ -197,7 +197,7 @@ fn ls_inproc(rest: &[String]) -> Result<ExitCode> {
             _ => {} // ignore unknown flags
         }
     }
-    match babysit::ls(json, watch, interval) {
+    match babysit::ls(paths, json, watch, interval) {
         Ok(()) => Ok(ExitCode::SUCCESS),
         Err(_) => Ok(ExitCode::from(1)),
     }

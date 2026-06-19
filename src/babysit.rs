@@ -1,36 +1,38 @@
 //! Wrapper over the `babysit` worker fleet.
 //!
-//! Step 4 (complete): looop is a SINGLE self-contained binary — the `babysit`
-//! executable is no longer required at runtime. Every data + control path runs
-//! against the babysit LIBRARY in-process: `list`/`ls`, `prune`, `status_exists`,
-//! `kill`, `flag`, `unflag`, `attach`, AND detached worker spawn.
+//! looop is a SINGLE self-contained binary — the `babysit` executable is not
+//! required at runtime. Every data + control path runs against the babysit
+//! LIBRARY in-process through an explicit [`Babysit`](::babysit::Babysit)
+//! context: looop derives the state root from its own `LOOOP_DATA_DIR`
+//! (`paths.sessions()`), so the fleet is self-contained per profile — no
+//! `$BABYSIT_DIR`, no shared `~/.babysit`, and no `looop-` id prefix needed to
+//! disambiguate a shared root.
 //!
-//! Detached spawn is the subtle one: babysit's detacher re-execs
-//! `std::env::current_exe()` (here = `looop`) as the headless supervisor with a
-//! hidden `run --detached-id <id>` form. looop handles that form itself
-//! (`run_detached_worker`) and hands it straight to babysit's `serve_worker`, so
-//! the worker is owned by a looop process — no `babysit` binary in the loop.
+//! Detached spawn re-execs `current_exe()` (= looop) as the headless supervisor;
+//! babysit hands the worker its state root via `--root` and the id via
+//! `--detached-id`, which looop routes back into the library
+//! (`run_detached_worker`) — so the worker is owned by a looop process with no
+//! `babysit` binary and no environment-derived configuration.
+//!
 //! The leading `::babysit` disambiguates the extern crate from this module.
 
-use serde::Deserialize;
-use std::sync::OnceLock;
+use crate::paths::Paths;
 
-/// The babysit session id the pulse (親玉) runs under when started as a service
-/// (`looop up`). It shares the `looop-` prefix so `looop ls` lists it alongside
-/// the workers, but it is NOT a worker: cadence selection, the world hash, the
-/// tick prompt's worker list, status, and flag-surfacing all treat it
-/// separately (see `list_workers`).
-pub const PULSE_SESSION: &str = "looop-pulse";
+/// The session id the pulse (親玉) runs under when started as a service
+/// (`looop up`). It is reserved: a worker can never take this id (see
+/// `session::cmd_start_session`), so the single control-plane session can't
+/// collide with a goal-named worker.
+pub const PULSE_SESSION: &str = "pulse";
 
-/// A process-wide current-thread tokio runtime to drive babysit's async API.
+/// A process-wide multi-thread tokio runtime to drive babysit's async API.
 /// looop is otherwise synchronous; async is confined to this boundary.
 fn rt() -> &'static tokio::runtime::Runtime {
+    use std::sync::OnceLock;
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
         // Multi-thread + enable_all to match babysit's own `#[tokio::main]`:
         // the detached worker (serve_worker) owns a PTY read loop + a control
         // socket accept loop concurrently, and `attach` drives a socket + PTY.
-        // The light paths (list/prune/flag) are happy here too.
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -38,97 +40,72 @@ fn rt() -> &'static tokio::runtime::Runtime {
     })
 }
 
-/// One row of `babysit ls --json`. Tolerant of missing fields (a starting
-/// session may not have an exit code or note yet).
-#[derive(Debug, Deserialize, Default)]
+/// One session in this profile's fleet — a thin projection of babysit's
+/// `SessionInfo` onto just what looop reasons about.
+#[derive(Debug, Default)]
 pub struct Session {
     pub id: String,
-    // `cmd` is an array of argv strings in `babysit ls --json`; keep it as a raw
-    // Value so a type mismatch can never fail the WHOLE list parse (it is not
-    // consumed here anyway). Tolerance over precision for an external schema.
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub cmd: Option<serde_json::Value>,
-    #[serde(default)]
     pub state: String,
-    #[serde(default)]
     pub alive: bool,
-    #[serde(default)]
     pub exit_code: Option<i64>,
-    #[serde(default)]
     pub note: Option<String>,
 }
 
 impl Session {
-    pub fn is_looop(&self) -> bool {
-        self.id.starts_with("looop-")
-    }
-    /// The pulse session is `looop-`-prefixed but is the 親玉, not a worker.
+    /// The pulse session is the 親玉, not a worker.
     pub fn is_pulse(&self) -> bool {
         self.id == PULSE_SESSION
     }
-    /// True when the worker has raised a flag (a non-empty note).
+    /// True when the session has raised a flag (a non-empty note).
     pub fn flagged(&self) -> bool {
         self.note.as_deref().map(|n| !n.is_empty()).unwrap_or(false)
     }
 }
 
-/// List sessions via the babysit library, IN-PROCESS. Any failure yields an
-/// empty list (matches the bash `2>/dev/null || true`): the pulse degrades
-/// gracefully, never wedges. babysit's `paths::root()` reads `$BABYSIT_DIR`
-/// fresh, so this honors looop's profile scoping just like the old shell-out.
-pub fn list() -> Vec<Session> {
-    match rt().block_on(::babysit::api::list_sessions()) {
-        Ok(sessions) => sessions
-            .into_iter()
-            .map(|s| Session {
-                id: s.id,
-                cmd: None,
-                state: s.state,
-                alive: s.alive,
-                exit_code: s.exit_code.map(|c| c as i64),
-                note: s.note,
-            })
-            .collect(),
+fn project(info: ::babysit::SessionInfo) -> Session {
+    Session {
+        id: info.id,
+        state: info.state,
+        alive: info.alive,
+        exit_code: info.exit_code.map(|c| c as i64),
+        note: info.note,
+    }
+}
+
+/// List every session in this profile's fleet. Any failure yields an empty
+/// list: the pulse degrades gracefully, never wedges.
+pub fn list(paths: &Paths) -> Vec<Session> {
+    match rt().block_on(paths.sessions().list_sessions()) {
+        Ok(sessions) => sessions.into_iter().map(project).collect(),
         Err(_) => Vec::new(),
     }
 }
 
-/// looop-owned WORKER sessions only — the pulse (親玉) is excluded. This is the
-/// list everything that reasons about "the fleet the pulse manages" must use
-/// (cadence, world hash, tick prompt, status, flag-surfacing), so the pulse
-/// never counts itself as one of its own workers.
-pub fn list_workers() -> Vec<Session> {
-    list()
-        .into_iter()
-        .filter(|s| s.is_looop() && !s.is_pulse())
-        .collect()
+/// Worker sessions only — the pulse (親玉) is excluded. Everything that reasons
+/// about "the fleet the pulse manages" (cadence, world hash, tick prompt,
+/// status, flag-surfacing) uses this so the pulse never counts itself.
+pub fn list_workers(paths: &Paths) -> Vec<Session> {
+    list(paths).into_iter().filter(|s| !s.is_pulse()).collect()
 }
 
 /// Clear exited/dead-owner corpses, IN-PROCESS and SILENTLY. babysit's own
-/// `sub::prune` prints to stdout (it is a CLI handler), which would pollute
-/// looop's pretty output, so we drive the same decision over babysit's lower
-/// level `session`/`paths` modules instead. Best-effort: any error is ignored,
-/// matching the old `2>/dev/null` shell-out.
-pub fn prune() {
+/// `prune` prints (it is a CLI handler), which would pollute looop's pretty
+/// output, so we drive the same decision over the library's lower-level
+/// session/context API. The fleet root is looop-exclusive, so every corpse here
+/// is ours. Best-effort: any error is ignored.
+pub fn prune(paths: &Paths) {
     use ::babysit::session::{self, State};
+    let bs = paths.sessions();
     rt().block_on(async {
-        let ids = match session::list_ids().await {
+        let ids = match session::list_ids(&bs).await {
             Ok(ids) => ids,
             Err(_) => return,
         };
         for id in ids {
-            // Scope to OUR fleet only. On the default profile looop shares
-            // ~/.babysit with the user's other babysit sessions, so pruning by
-            // liveness alone would reap THEIR dead corpses too. Only ever touch
-            // `looop-` ids (the pulse + workers we own).
-            if !id.starts_with("looop-") {
-                continue;
-            }
-            let Ok(meta) = session::read_meta(&id).await else {
+            let Ok(meta) = session::read_meta(&bs, &id).await else {
                 continue; // unparseable meta — leave it alone, never nuke blind
             };
-            let status = session::read_status(&id).await.ok();
+            let status = session::read_status(&bs, &id).await.ok();
             let alive = session::is_pid_alive(meta.babysit_pid);
             let dead = match status.as_ref().map(|s| s.state) {
                 Some(State::Exited | State::Killed) => true,
@@ -136,54 +113,58 @@ pub fn prune() {
                 None if !alive => true,
                 _ => false,
             };
-            if dead && let Ok(dir) = ::babysit::paths::session_dir(&id) {
-                let _ = tokio::fs::remove_dir_all(&dir).await;
+            if dead {
+                let _ = tokio::fs::remove_dir_all(bs.session_dir(&id)).await;
             }
         }
     });
 }
 
-/// Does a session with this id exist? In-process: the id is present in the
-/// fleet list (replaces `babysit status -s <id>`).
-pub fn status_exists(session: &str) -> bool {
-    list().iter().any(|s| s.id == session)
+/// Does a session with this id exist in the fleet?
+pub fn status_exists(paths: &Paths, session: &str) -> bool {
+    list(paths).iter().any(|s| s.id == session)
 }
 
-/// `looop kill <id>` — terminate a session. Prints babysit's own result line
-/// (this is a user-facing verb, so its output is wanted). Returns Ok on success.
-pub fn kill(session: &str) -> anyhow::Result<()> {
-    rt().block_on(::babysit::sub::kill(Some(session.to_string()), false))
+/// `looop kill <id>` — terminate a session.
+pub fn kill(paths: &Paths, session: &str) -> anyhow::Result<()> {
+    rt().block_on(paths.sessions().kill(Some(session.to_string()), false))
 }
 
-/// `looop flag <id> [msg]` — raise a worker's attention flag.
-pub fn flag(session: &str, message: Option<String>) -> anyhow::Result<()> {
-    rt().block_on(::babysit::sub::flag(
-        Some(session.to_string()),
-        message,
-        false,
-    ))
+/// `looop flag <id> [msg]` — raise a session's attention flag.
+pub fn flag(paths: &Paths, session: &str, message: Option<String>) -> anyhow::Result<()> {
+    rt().block_on(
+        paths
+            .sessions()
+            .flag(Some(session.to_string()), message, false),
+    )
 }
 
-/// `looop unflag <id>` — clear a worker's attention flag.
-pub fn unflag(session: &str) -> anyhow::Result<()> {
-    rt().block_on(::babysit::sub::unflag(Some(session.to_string()), false))
+/// `looop unflag <id>` — clear a session's attention flag.
+pub fn unflag(paths: &Paths, session: &str) -> anyhow::Result<()> {
+    rt().block_on(paths.sessions().unflag(Some(session.to_string()), false))
 }
 
 /// `looop attach <id>` — attach the terminal to a session; returns its exit code.
-pub fn attach(session: &str) -> anyhow::Result<i32> {
-    rt().block_on(::babysit::attach::attach(Some(session.to_string())))
+pub fn attach(paths: &Paths, session: &str) -> anyhow::Result<i32> {
+    let bs = paths.sessions();
+    rt().block_on(::babysit::attach::attach(&bs, Some(session.to_string())))
 }
 
 /// `looop detach <id>` — force-detach any other terminal attached to a session.
-pub fn detach(session: &str, json: bool) -> anyhow::Result<()> {
-    rt().block_on(::babysit::attach::detach(Some(session.to_string()), json))
+pub fn detach(paths: &Paths, session: &str, json: bool) -> anyhow::Result<()> {
+    let bs = paths.sessions();
+    rt().block_on(::babysit::attach::detach(
+        &bs,
+        Some(session.to_string()),
+        json,
+    ))
 }
 
-/// `looop watch <id>` — follow a session's output read-only (tail -f), printing
-/// the full log so far and then live output until the session exits (Ctrl-C to
-/// stop). This is the non-interactive twin of `attach`: no input, just output.
-pub fn watch(session: &str) -> anyhow::Result<()> {
-    rt().block_on(::babysit::sub::log(
+/// `looop watch <id>` — follow a session's output read-only (tail -f): the full
+/// log so far, then live output until the session exits. The non-interactive
+/// twin of `attach`.
+pub fn watch(paths: &Paths, session: &str) -> anyhow::Result<()> {
+    rt().block_on(paths.sessions().log(
         Some(session.to_string()),
         None,  // tail: whole log, then follow
         None,  // grep
@@ -197,6 +178,7 @@ pub fn watch(session: &str) -> anyhow::Result<()> {
 /// `looop log <id>` — show / tail / grep / follow a session's recorded output.
 #[allow(clippy::too_many_arguments)]
 pub fn log(
+    paths: &Paths,
     session: &str,
     tail: Option<usize>,
     grep: Option<String>,
@@ -205,7 +187,7 @@ pub fn log(
     follow: bool,
     json: bool,
 ) -> anyhow::Result<()> {
-    rt().block_on(::babysit::sub::log(
+    rt().block_on(paths.sessions().log(
         Some(session.to_string()),
         tail,
         grep,
@@ -218,35 +200,42 @@ pub fn log(
 
 /// `looop shot <id>` — render the session's current visible screen.
 pub fn screenshot(
+    paths: &Paths,
     session: &str,
     format: ::babysit::cli::ShotFormat,
     trim: bool,
 ) -> anyhow::Result<()> {
-    rt().block_on(::babysit::sub::screenshot(
-        Some(session.to_string()),
-        format,
-        trim,
-    ))
+    rt().block_on(
+        paths
+            .sessions()
+            .screenshot(Some(session.to_string()), format, trim),
+    )
 }
 
 /// `looop send <id> <text>` — type text into a session's stdin.
-pub fn send(session: &str, text: String, newline: bool, json: bool) -> anyhow::Result<()> {
-    rt().block_on(::babysit::sub::send(
-        Some(session.to_string()),
-        text,
-        newline,
-        json,
-    ))
+pub fn send(
+    paths: &Paths,
+    session: &str,
+    text: String,
+    newline: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    rt().block_on(
+        paths
+            .sessions()
+            .send(Some(session.to_string()), text, newline, json),
+    )
 }
 
 /// `looop key <id> <KEY...>` — send named keys (Enter, Up, C-c, …) to a session.
-pub fn key(session: &str, keys: Vec<String>, json: bool) -> anyhow::Result<()> {
-    rt().block_on(::babysit::sub::key(Some(session.to_string()), keys, json))
+pub fn key(paths: &Paths, session: &str, keys: Vec<String>, json: bool) -> anyhow::Result<()> {
+    rt().block_on(paths.sessions().key(Some(session.to_string()), keys, json))
 }
 
 /// `looop expect <id> <REGEX>` — block until a regex appears; exit 124 on timeout.
 #[allow(clippy::too_many_arguments)]
 pub fn expect(
+    paths: &Paths,
     session: &str,
     pattern: String,
     timeout: String,
@@ -256,7 +245,7 @@ pub fn expect(
     screen: bool,
     json: bool,
 ) -> anyhow::Result<i32> {
-    rt().block_on(::babysit::sub::expect(
+    rt().block_on(paths.sessions().expect(
         Some(session.to_string()),
         pattern,
         timeout,
@@ -269,49 +258,53 @@ pub fn expect(
 }
 
 /// `looop wait <id>` — block until the session exits; returns its exit code.
-pub fn wait(session: &str, timeout: Option<String>) -> anyhow::Result<i32> {
-    rt().block_on(::babysit::sub::wait(Some(session.to_string()), timeout))
+pub fn wait(paths: &Paths, session: &str, timeout: Option<String>) -> anyhow::Result<i32> {
+    rt().block_on(paths.sessions().wait(Some(session.to_string()), timeout))
 }
 
 /// `looop wait-idle <id>` — block until output is quiet for `settle`.
-pub fn wait_idle(session: &str, settle: String, timeout: String) -> anyhow::Result<i32> {
-    rt().block_on(::babysit::sub::wait_idle(
-        Some(session.to_string()),
-        settle,
-        timeout,
-    ))
+pub fn wait_idle(
+    paths: &Paths,
+    session: &str,
+    settle: String,
+    timeout: String,
+) -> anyhow::Result<i32> {
+    rt().block_on(
+        paths
+            .sessions()
+            .wait_idle(Some(session.to_string()), settle, timeout),
+    )
 }
 
 /// `looop resize <id> <COLSxROWS>` — resize a session's terminal.
-pub fn resize(session: &str, size: String, json: bool) -> anyhow::Result<()> {
-    rt().block_on(::babysit::sub::resize(
-        Some(session.to_string()),
-        size,
-        json,
-    ))
+pub fn resize(paths: &Paths, session: &str, size: String, json: bool) -> anyhow::Result<()> {
+    rt().block_on(
+        paths
+            .sessions()
+            .resize(Some(session.to_string()), size, json),
+    )
 }
 
 /// `looop restart <id>` — restart the wrapped command in a session.
-pub fn restart(session: &str, json: bool) -> anyhow::Result<()> {
-    rt().block_on(::babysit::sub::restart(Some(session.to_string()), json))
+pub fn restart(paths: &Paths, session: &str, json: bool) -> anyhow::Result<()> {
+    rt().block_on(paths.sessions().restart(Some(session.to_string()), json))
 }
 
 /// `looop ls [--json] [--watch] [--interval <dur>]` — render the fleet table
-/// IN-PROCESS via babysit's own list renderer (this is the printing CLI path,
-/// so its stdout is exactly what we want). `--watch` refreshes in place, just
-/// like `babysit ls --watch`, because the loop lives in the library.
-pub fn ls(json: bool, watch: bool, interval: String) -> anyhow::Result<()> {
-    rt().block_on(::babysit::sub::list(json, watch, interval))
+/// IN-PROCESS via babysit's own list renderer.
+pub fn ls(paths: &Paths, json: bool, watch: bool, interval: String) -> anyhow::Result<()> {
+    rt().block_on(paths.sessions().list(json, watch, interval))
 }
 
-/// Spawn a detached worker IN-PROCESS (no `babysit` binary). babysit's parent
-/// path picks the id, then re-execs `current_exe()` (= looop) as the headless
-/// supervisor — looop routes that back into `serve_worker` via
-/// `run_detached_worker`. babysit prints a start banner on the parent path; we
-/// suppress it so looop owns its own "started …" output.
-pub fn spawn_detached(cmd: Vec<String>, session: &str) -> anyhow::Result<()> {
+/// Spawn a detached worker IN-PROCESS. babysit's parent path re-execs
+/// `current_exe()` (= looop) as the headless supervisor, handing it the state
+/// root via `--root` and the id via `--detached-id`; looop routes that back into
+/// `serve_worker` via `run_detached_worker`. babysit prints a start banner on
+/// the parent path; we suppress it so looop owns its own "started …" output.
+pub fn spawn_detached(paths: &Paths, cmd: Vec<String>, session: &str) -> anyhow::Result<()> {
+    let bs = paths.sessions();
     suppress_stdout(|| {
-        rt().block_on(::babysit::run::run(
+        rt().block_on(bs.run(
             cmd,
             Some(session.to_string()),
             true,  // detach: spawn the worker and return immediately
@@ -327,13 +320,15 @@ pub fn spawn_detached(cmd: Vec<String>, session: &str) -> anyhow::Result<()> {
 }
 
 /// The worker side of detached spawn: looop was re-exec'd by babysit's detacher
-/// as `looop run --detached-id <id> [--no-tty] [--timeout <ms>] [--idle-timeout
-/// <ms>] [--size <CxR>] -- <cmd…>`. Parse that argv (babysit's own format, pinned
-/// by the `^0.10` dep) and hand off to the library's headless supervisor, which
-/// blocks until the wrapped command exits.
+/// as `looop run --detached-id <id> --root <dir> [--no-tty] [--timeout <ms>]
+/// [--idle-timeout <ms>] [--size <CxR>] -- <cmd…>`. Parse that argv and hand off
+/// to the library's headless supervisor, which blocks until the wrapped command
+/// exits. The state root comes from `--root`, so the worker reconstructs THIS
+/// fleet's context without reading any environment.
 pub fn run_detached_worker(args: &[String]) -> anyhow::Result<i32> {
     use anyhow::Context;
     let mut id = None;
+    let mut root = None;
     let mut no_tty = false;
     let mut timeout = None;
     let mut idle_timeout = None;
@@ -343,6 +338,7 @@ pub fn run_detached_worker(args: &[String]) -> anyhow::Result<i32> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--detached-id" => id = it.next().cloned(),
+            "--root" => root = it.next().cloned(),
             "--no-tty" => no_tty = true,
             "--timeout" => timeout = it.next().cloned(),
             "--idle-timeout" => idle_timeout = it.next().cloned(),
@@ -355,7 +351,9 @@ pub fn run_detached_worker(args: &[String]) -> anyhow::Result<i32> {
         }
     }
     let id = id.context("looop run --detached-id: missing worker id")?;
-    rt().block_on(::babysit::run::run(
+    let root = root.context("looop run --detached-id: missing --root")?;
+    let bs = ::babysit::Babysit::new(root);
+    rt().block_on(bs.run(
         cmd,
         None,
         false,
@@ -404,13 +402,13 @@ fn suppress_stdout<T>(f: impl FnOnce() -> T) -> T {
 }
 
 /// Is a session currently alive?
-pub fn is_alive(session: &str) -> bool {
-    list().iter().any(|s| s.id == session && s.alive)
+pub fn is_alive(paths: &Paths, session: &str) -> bool {
+    list(paths).iter().any(|s| s.id == session && s.alive)
 }
 
 /// Any looop worker currently in flight?
-pub fn any_worker_alive() -> bool {
-    list_workers().iter().any(|s| s.alive)
+pub fn any_worker_alive(paths: &Paths) -> bool {
+    list_workers(paths).iter().any(|s| s.alive)
 }
 
 #[cfg(test)]
@@ -426,26 +424,15 @@ mod tests {
     }
 
     #[test]
-    fn is_looop_matches_only_prefixed_ids() {
-        assert!(sess("looop-triage", None).is_looop());
-        assert!(!sess("other-job", None).is_looop());
-        assert!(!sess("looop", None).is_looop()); // needs the trailing dash
-    }
-
-    #[test]
-    fn pulse_is_looop_but_not_a_worker() {
-        let p = sess(PULSE_SESSION, None);
-        assert!(p.is_looop(), "pulse shares the looop- prefix");
-        assert!(p.is_pulse(), "pulse is the 親玉");
-        // A worker is looop-prefixed but is NOT the pulse.
-        let w = sess("looop-triage", None);
-        assert!(w.is_looop() && !w.is_pulse());
+    fn pulse_is_recognized() {
+        assert!(sess(PULSE_SESSION, None).is_pulse());
+        assert!(!sess("triage", None).is_pulse());
     }
 
     #[test]
     fn flagged_iff_nonempty_note() {
-        assert!(sess("looop-x", Some("help")).flagged());
-        assert!(!sess("looop-x", Some("")).flagged());
-        assert!(!sess("looop-x", None).flagged());
+        assert!(sess("x", Some("help")).flagged());
+        assert!(!sess("x", Some("")).flagged());
+        assert!(!sess("x", None).flagged());
     }
 }
