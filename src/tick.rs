@@ -86,10 +86,11 @@ pub fn tick(paths: &Paths) -> bool {
         serde_json::json!({ "runner": runner_name, "run_id": cost_id }),
     );
 
-    // The runner's live output streams flat under the `tick.start` step (no
-    // gutter art). In JSON mode `run_streamed` suppresses stdout (tees to files
-    // only) so the machine stream stays one-object-per-line.
-    let gutter = "";
+    // The pulse stream stays a clean structured-event log: the runner's
+    // free-form chatter (its `→ bash:` calls, blank lines, final text) is
+    // archived to the tee files but NOT echoed live (live=false), so
+    // `looop watch pulse` shows only `tick.*`/`sense.*` events. Replay the full
+    // detail from runs/<id>/output.log or tick.log.
     let tee: Vec<PathBuf> = vec![run_dir.join("output.log"), paths.data_dir.join("tick.log")];
     let cost_env = [
         ("LOOOP_COST_KIND", "tick"),
@@ -98,7 +99,7 @@ pub fn tick(paths: &Paths) -> bool {
     ];
 
     let mut acted = false;
-    if runner::run_streamed(paths, &tick_cmd, &prompt_file, &cost_env, &tee, gutter) {
+    if runner::run_streamed(paths, &tick_cmd, &prompt_file, &cost_env, &tee, false) {
         let _ = fs::write(paths.data_dir.join(".last-tick-hash"), format!("{hash}\n"));
         acted = true;
         let last_line = journal_tail(paths);

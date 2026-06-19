@@ -235,7 +235,7 @@ pub fn cmd_run_goal(paths: &Paths, id: &str) -> Result<ExitCode> {
         ("LOOOP_COST_RUNNER", runner_name.as_str()),
         ("LOOOP_COST_ID", id),
     ];
-    runner::run_streamed(paths, &tick_cmd, &prompt_file, &cost_env, &tee, "");
+    runner::run_streamed(paths, &tick_cmd, &prompt_file, &cost_env, &tee, true);
 
     let last_line = fs::read_to_string(paths.journal())
         .ok()

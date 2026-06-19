@@ -84,10 +84,7 @@ pub fn cmd_up(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     let bin = paths.bin.to_string_lossy().to_string();
     session::spawn_detached(paths, vec![bin, "_pulse".to_string()], PULSE_SESSION)?;
 
-    println!(
-        "looop: pulse started{}",
-        if json { " [json]" } else { "" }
-    );
+    println!("looop: pulse started{}", if json { " [json]" } else { "" });
     if watch {
         // The detached supervisor needs a beat to register the session; wait so
         // we don't race it and get `no session matching pulse`.
