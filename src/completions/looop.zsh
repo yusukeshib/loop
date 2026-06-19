@@ -46,8 +46,6 @@ _looop() {
         cmd)
             local -a cmds
             cmds=(
-                'up:Run the pulse as a detached background service'
-                'down:Stop the detached pulse service'
                 'watch:Follow a session output read-only (tail -f)'
                 'tick:Run a single beat and exit (debug / cron)'
                 'ls:List this profile worker sessions'
@@ -77,11 +75,6 @@ _looop() {
             ;;
         args)
             case $words[1] in
-                up)
-                    _arguments \
-                        '(-w --watch)'{-w,--watch}'[Follow the pulse output after starting]' \
-                        '--json[Pulse emits NDJSON to its log]'
-                    ;;
                 attach|kill|flag|unflag|restart)
                     (( CURRENT == 2 )) && __looop_workers
                     ;;

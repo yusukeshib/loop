@@ -14,13 +14,13 @@ pub fn print(paths: &Paths) {
     println!(
         r#"
 Usage:
-  looop up [--watch] [--json]    run the pulse as a DETACHED service (it becomes
-                                a supervised session). --json makes the
-                                pulse emit NDJSON to its log (agent-readable);
-                                --watch follows that output after starting.
-                                Idempotent: a live pulse is left running.
-  looop down [--keep-workers]    stop the pulse AND its live workers
-                                (--keep-workers stops only the pulse)
+  looop [--json]                 run the loop in the FOREGROUND: bring the pulse
+                                up as a supervised session, stream its output,
+                                and on exit (Ctrl-C, or the pulse dying) tear the
+                                pulse AND its workers down. There is no detached
+                                mode — closing this stops the loop. --json makes
+                                the pulse emit NDJSON to its log (agent-readable).
+                                To run unattended, background it (looop & / nohup).
   looop watch <id>               follow a session's output read-only, like
                                 tail -f (Ctrl-C to stop). `looop watch pulse`
                                 watches the loop itself. No input — use attach
