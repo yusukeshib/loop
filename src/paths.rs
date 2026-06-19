@@ -19,9 +19,9 @@ pub struct Paths {
     pub data_dir: PathBuf,
     /// The single runner-wiring config file ($LOOOP_CONFIG).
     pub config: PathBuf,
-    /// Per-profile babysit state root, when this is a non-default profile.
-    /// `None` on the default profile (leaves ~/.babysit untouched).
-    pub babysit_dir: Option<PathBuf>,
+    /// True when this is the default profile (data_dir == the XDG default), used
+    /// only to decide whether shell hints need an explicit `LOOOP_DATA_DIR=`.
+    pub default_profile: bool,
 }
 
 fn home() -> PathBuf {
@@ -53,23 +53,29 @@ impl Paths {
             _ => xdg("XDG_CONFIG_HOME", ".config").join("looop.json"),
         };
 
-        // Worker-fleet isolation: a non-default profile (= a distinct
-        // LOOOP_DATA_DIR) gets its own babysit root, derived PURELY from
-        // LOOOP_DATA_DIR (it intentionally ignores any inherited BABYSIT_DIR),
-        // so `babysit ls/prune/kill` are naturally scoped to THIS profile. The
-        // default profile keeps ~/.babysit untouched (zero migration).
-        let babysit_dir = if data_dir != default_data {
-            Some(data_dir.join("babysit"))
-        } else {
-            None
-        };
+        // Worker-fleet isolation: the session store ALWAYS lives inside this
+        // profile's data dir (`<data_dir>/sessions`), derived purely from
+        // LOOOP_DATA_DIR (ignoring any inherited BABYSIT_DIR). Every profile —
+        // including the default one — is therefore self-contained, so session
+        // ids never need a `looop-` prefix to be disambiguated from anything
+        // else in a shared root.
+        let default_profile = data_dir == default_data;
 
         Paths {
             bin,
             data_dir,
             config,
-            babysit_dir,
+            default_profile,
         }
+    }
+
+    /// This profile's session store, as an explicit context. The state root is
+    /// the data dir itself, so sessions live at `<LOOOP_DATA_DIR>/sessions/<id>`
+    /// — self-contained per profile, configured by an explicit path rather than
+    /// any ambient environment. (The library nests sessions under
+    /// `<root>/sessions/`, so the root is the data dir, not a `sessions` subdir.)
+    pub fn sessions(&self) -> ::babysit::Babysit {
+        ::babysit::Babysit::new(&self.data_dir)
     }
 
     // ---- derived data-dir paths (mirror the bash globals) -------------------
@@ -112,9 +118,10 @@ impl Paths {
     /// LOOOP_DATA_DIR, which a bare `looop` invocation wouldn't know about, so
     /// emit `LOOOP_DATA_DIR=... ` to re-scope it. Empty on the default profile.
     pub fn looop_hint_env(&self) -> String {
-        match &self.babysit_dir {
-            Some(_) => format!("LOOOP_DATA_DIR={} ", self.data_dir.display()),
-            None => String::new(),
+        if self.default_profile {
+            String::new()
+        } else {
+            format!("LOOOP_DATA_DIR={} ", self.data_dir.display())
         }
     }
 
@@ -130,7 +137,7 @@ impl Paths {
             bin: PathBuf::from("looop"),
             data_dir: dir.clone(),
             config: dir.join("looop.json"),
-            babysit_dir: None,
+            default_profile: false,
         }
     }
 }

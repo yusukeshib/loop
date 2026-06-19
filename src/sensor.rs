@@ -6,7 +6,7 @@
 //!     can't silently inflate prompt context + LLM cost on every beat.
 
 use crate::paths::Paths;
-use crate::util;
+use crate::util::{self, Level};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -92,16 +92,15 @@ pub fn sensor_scripts(paths: &Paths) -> Vec<PathBuf> {
 /// tick; otherwise stay quiet (manual goal runs).
 pub fn run_all(paths: &Paths, snap_dir: &Path, verbose: bool) {
     let scripts = sensor_scripts(paths);
-    if verbose && !scripts.is_empty() {
-        util::log(&format!(
-            "{}sensing the world{} {}({} sensors){}…",
-            util::b(),
-            util::rst(),
-            util::dim(),
-            scripts.len(),
-            util::rst()
-        ));
-    }
+    let total = scripts.len();
+    // Per-sensor lines are machine granularity — only the JSON stream gets them.
+    // The human pulse stream gets ONE summary line (below), so a healthy fleet of
+    // sensors doesn't drown the decisions a watcher actually cares about.
+    let json = util::is_json();
+    let t0_all = Instant::now();
+    let mut ok = 0usize;
+    let mut failed: Vec<String> = Vec::new();
+
     for s in scripts {
         let name = s
             .file_stem()
@@ -113,46 +112,71 @@ pub fn run_all(paths: &Paths, snap_dir: &Path, verbose: bool) {
         let t0 = Instant::now();
         let rc = exec_sensor(&s, &out, &err);
         let secs = t0.elapsed().as_secs();
-        if verbose {
-            if rc == 0 {
-                util::log(&format!(
-                    "  {}✓{} {} {}({}s){}",
-                    util::grn(),
-                    util::rst(),
-                    name,
-                    util::dim(),
-                    secs,
-                    util::rst()
-                ));
-            } else {
-                if rc == 124 {
-                    let to = env_num("LOOOP_SENSOR_TIMEOUT", 60);
-                    let _ = fs::OpenOptions::new().append(true).open(&err).map(|mut f| {
-                        use std::io::Write;
-                        let _ = writeln!(f, "sensor timed out after {to}s (LOOOP_SENSOR_TIMEOUT)");
-                    });
-                }
-                util::log(&format!(
-                    "  {}✗ {} FAILED{} {}({}s) — see snapshots/sensor-{}.err{}",
-                    util::red(),
-                    name,
-                    util::rst(),
-                    util::dim(),
-                    secs,
-                    name,
-                    util::rst()
-                ));
-            }
-        } else if rc == 124 {
+        if rc == 124 {
             let to = env_num("LOOOP_SENSOR_TIMEOUT", 60);
             let _ = fs::OpenOptions::new().append(true).open(&err).map(|mut f| {
                 use std::io::Write;
                 let _ = writeln!(f, "sensor timed out after {to}s (LOOOP_SENSOR_TIMEOUT)");
             });
         }
+        if rc == 0 {
+            ok += 1;
+            if verbose && json {
+                util::event(
+                    Level::Ok,
+                    "sense.ok",
+                    &format!("{name} ({secs}s)"),
+                    &[
+                        ("sensor", serde_json::json!(name)),
+                        ("secs", serde_json::json!(secs)),
+                    ],
+                );
+            }
+        } else {
+            failed.push(name.clone());
+            if verbose && json {
+                util::event(
+                    Level::Error,
+                    "sense.fail",
+                    &format!("{name} failed ({secs}s) — see snapshots/sensor-{name}.err"),
+                    &[
+                        ("sensor", serde_json::json!(name)),
+                        ("secs", serde_json::json!(secs)),
+                    ],
+                );
+            }
+        }
         // Drop the empty .err a successful sensor leaves behind.
         if fs::metadata(&err).map(|m| m.len() == 0).unwrap_or(false) {
             let _ = fs::remove_file(&err);
+        }
+    }
+
+    // The summary: a single dim heartbeat line when all is well, a red line that
+    // names the offenders when not. (In JSON mode this rides alongside the
+    // per-sensor events as a `sense` aggregate.)
+    if verbose && total > 0 {
+        let secs = t0_all.elapsed().as_secs();
+        let fields = [
+            ("ok", serde_json::json!(ok)),
+            ("total", serde_json::json!(total)),
+            ("failed", serde_json::json!(failed)),
+            ("secs", serde_json::json!(secs)),
+        ];
+        if failed.is_empty() {
+            util::event(
+                Level::Info,
+                "sense",
+                &format!("{ok} sensors ok ({secs}s)"),
+                &fields,
+            );
+        } else {
+            util::event(
+                Level::Error,
+                "sense",
+                &format!("{ok}/{total} sensors ok · failed: {}", failed.join(", ")),
+                &fields,
+            );
         }
     }
 }

@@ -1,12 +1,12 @@
 //! looop — a tiny, portable, Kubernetes-shaped control loop for your work.
 //!
 //! Rust port. The pulse is unbreakable code, judgment is the AI, memory is git
-//! (RULE 2). babysit is linked as a LIBRARY: list/prune/status/kill/flag/unflag/
-//! attach all run in-process. The one verb that still shells out is detached
-//! worker spawn (`start-session` -> `babysit run -d`), because babysit's detacher
-//! re-execs its own binary as the supervisor.
+//! (RULE 2). babysit is linked as a LIBRARY and driven entirely in-process —
+//! list/prune/status/kill/flag/unflag/attach AND detached worker spawn all run
+//! through the library, no `babysit` binary. The one process re-exec is the
+//! detached supervisor: babysit's detacher re-execs looop itself (current_exe)
+//! as the headless worker supervisor (`looop run --detached-id <id> -- <cmd>`).
 
-mod babysit;
 mod config;
 mod cost;
 mod deps;
@@ -35,6 +35,7 @@ fn main() -> ExitCode {
     restore_sigpipe();
     let paths = Paths::resolve();
     export_env(&paths);
+    util::init_format();
     util::init_color();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -43,7 +44,7 @@ fn main() -> ExitCode {
     // surprising than helpful. Require a verb (foreground pulse = `looop run`).
     let Some(cmd) = args.first().map(String::as_str) else {
         eprintln!(
-            "looop: no command — try: up, down, run [<goal>], tick, ls, status, start-session, attach, kill, flag, unflag, prune, help"
+            "looop: no command — try: up [--watch], down, watch <id>, run <goal>, tick, ls, status, log, send, key, attach, kill, flag, unflag, prune, help"
         );
         return ExitCode::from(1);
     };
@@ -62,19 +63,43 @@ fn main() -> ExitCode {
         // supervisor (`looop run --detached-id <id> -- <cmd>`). Route straight
         // to serve_worker; no deps check, no pulse.
         "run" | "loop" if rest.first().map(String::as_str) == Some("--detached-id") => {
-            babysit::run_detached_worker(rest).map(|c| ExitCode::from(c.clamp(0, 255) as u8))
+            session::run_detached_worker(rest).map(|c| ExitCode::from(c.clamp(0, 255) as u8))
         }
+        // `looop run <goal>` is the manual one-shot (forced single move). A bare
+        // `looop run` (foreground pulse) is gone: the pulse only ever runs as a
+        // detached service now — `looop up` (watch it with `--watch`).
         "run" | "loop" => deps::require_deps(&paths).and_then(|_| match rest.first() {
             Some(goal) => run::cmd_run_goal(&paths, goal),
-            None => run::cmd_run(&paths),
+            None => {
+                eprintln!(
+                    "looop run: needs a goal id (manual one-shot). Start the pulse with: looop up"
+                );
+                eprintln!("  e.g. looop run setup");
+                Ok(ExitCode::from(1))
+            }
         }),
         "tick" => deps::require_deps(&paths).and_then(|_| tick::cmd_tick(&paths)),
         // The pulse-as-a-service trio + its read-only window.
-        "up" => deps::require_deps(&paths).and_then(|_| service::cmd_up(&paths)),
+        "up" => deps::require_deps(&paths).and_then(|_| service::cmd_up(&paths, rest)),
         "down" => service::cmd_down(&paths),
+        "watch" => deps::require_deps(&paths).and_then(|_| session::cmd_watch(&paths, rest)),
+        "log" | "logs" => deps::require_deps(&paths).and_then(|_| session::cmd_log(&paths, rest)),
+        "shot" | "screenshot" => {
+            deps::require_deps(&paths).and_then(|_| session::cmd_screenshot(&paths, rest))
+        }
+        "send" => deps::require_deps(&paths).and_then(|_| session::cmd_send(&paths, rest)),
+        "key" => deps::require_deps(&paths).and_then(|_| session::cmd_key(&paths, rest)),
+        "expect" => deps::require_deps(&paths).and_then(|_| session::cmd_expect(&paths, rest)),
+        "wait" => deps::require_deps(&paths).and_then(|_| session::cmd_wait(&paths, rest)),
+        "wait-idle" => {
+            deps::require_deps(&paths).and_then(|_| session::cmd_wait_idle(&paths, rest))
+        }
+        "resize" => deps::require_deps(&paths).and_then(|_| session::cmd_resize(&paths, rest)),
+        "restart" => deps::require_deps(&paths).and_then(|_| session::cmd_restart(&paths, rest)),
+        "detach" => deps::require_deps(&paths).and_then(|_| session::cmd_detach(&paths, rest)),
         // Hidden: the headless pulse body babysit wraps under a PTY (`looop up`).
         "_pulse" => deps::require_deps(&paths).and_then(|_| service::cmd_pulse(&paths)),
-        "ls" => deps::require_deps(&paths).and_then(|_| ls_inproc(rest)),
+        "ls" => deps::require_deps(&paths).and_then(|_| ls_inproc(&paths, rest)),
         "status" => status::cmd_status(&paths, rest),
         "start-session" => {
             deps::require_deps(&paths).and_then(|_| session::cmd_start_session(&paths, rest))
@@ -105,7 +130,7 @@ fn main() -> ExitCode {
         "_cost" => cost::cmd_cost_record(&paths, rest),
         other => {
             eprintln!(
-                "looop: unknown command '{other}' (try: run, run <goal>, up, down, tick, ls, status, start-session, attach, kill, flag, unflag, prune, help)"
+                "looop: unknown command '{other}' (try: up [--watch], down, watch <id>, run <goal>, tick, ls, status, log, shot, send, key, expect, wait, wait-idle, resize, restart, attach, detach, kill, flag, unflag, prune, help)"
             );
             Ok(ExitCode::from(1))
         }
@@ -147,15 +172,15 @@ fn export_env(paths: &Paths) {
     set("CLAIMS_DIR", paths.claims_dir().as_os_str());
     set("REPORTS_DIR", paths.reports_dir().as_os_str());
     set("COST_LEDGER", paths.cost_ledger().as_os_str());
-    if let Some(bd) = &paths.babysit_dir {
-        set("BABYSIT_DIR", bd.as_os_str());
-    }
+    // NB: no $BABYSIT_DIR. looop never configures the babysit library through the
+    // environment — it passes an explicit context (`paths.sessions()`) to every
+    // call, and the detached worker receives its root via `--root`.
 }
 
 /// `looop ls [--json] [--watch] [--interval <dur>]` — render the fleet table
 /// IN-PROCESS via the babysit library (no `babysit` binary). Parses the same
 /// flags babysit ls accepts.
-fn ls_inproc(rest: &[String]) -> Result<ExitCode> {
+fn ls_inproc(paths: &Paths, rest: &[String]) -> Result<ExitCode> {
     let mut json = false;
     let mut watch = false;
     let mut interval = "2s".to_string();
@@ -172,7 +197,7 @@ fn ls_inproc(rest: &[String]) -> Result<ExitCode> {
             _ => {} // ignore unknown flags
         }
     }
-    match babysit::ls(json, watch, interval) {
+    match session::ls(paths, json, watch, interval) {
         Ok(()) => Ok(ExitCode::SUCCESS),
         Err(_) => Ok(ExitCode::from(1)),
     }

@@ -2,9 +2,9 @@
 //! whose session is no longer alive (crash-safety), so the AI never has to
 //! clean up a corpse's lease.
 
-use crate::babysit;
 use crate::events;
 use crate::paths::Paths;
+use crate::session;
 use crate::util;
 use std::fs;
 
@@ -15,7 +15,7 @@ pub fn reap_stale_claims(paths: &Paths) {
     if !dir.is_dir() {
         return;
     }
-    let alive: Vec<String> = babysit::list()
+    let alive: Vec<String> = session::list(paths)
         .into_iter()
         .filter(|s| s.alive)
         .map(|s| s.id)
@@ -38,13 +38,18 @@ pub fn reap_stale_claims(paths: &Paths) {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
-            util::log(&format!(
-                "  {}reaped stale claim {} (session '{}' not alive){}",
-                util::dim(),
-                name,
-                if sess.is_empty() { "?" } else { &sess },
-                util::rst()
-            ));
+            util::event(
+                util::Level::Info,
+                "claim.reaped",
+                &format!(
+                    "reaped stale claim {name} (session '{}' not alive)",
+                    if sess.is_empty() { "?" } else { &sess }
+                ),
+                &[
+                    ("claim", serde_json::json!(name)),
+                    ("session", serde_json::json!(sess)),
+                ],
+            );
             events::emit(
                 paths,
                 "claim_reaped",

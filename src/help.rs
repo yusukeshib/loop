@@ -14,16 +14,23 @@ pub fn print(paths: &Paths) {
     println!(
         r#"
 Usage:
-  looop run                      run the pulse in the FOREGROUND (Ctrl-C to stop)
-  looop up                       run the pulse as a DETACHED service (the 親玉
-                                becomes a babysit session; see it with looop ls,
-                                watch it with looop attach pulse)
+  looop up [--watch] [--json]    run the pulse as a DETACHED service (it becomes
+                                a supervised session). --json makes the
+                                pulse emit NDJSON to its log (agent-readable);
+                                --watch follows that output after starting.
+                                Idempotent: a live pulse is left running.
   looop down                     stop the detached pulse service
+  looop watch <id>               follow a session's output read-only, like
+                                tail -f (Ctrl-C to stop). `looop watch pulse`
+                                watches the loop itself. No input — use attach
+                                for that.
   looop run <goal-id>            run ONE goal NOW (manual override): a forced,
                                 goal-focused move, ignoring priority order and
                                 the world-unchanged skip; works while the pulse
                                 runs. <goal-id> = goals/<id>.md basename.
                                 e.g. looop run setup ; looop run morning-standup
+                                (a bare `looop run` is gone — the pulse only runs
+                                detached now; start it with `looop up`.)
   looop tick                     run a single beat and exit (debug / cron)
   looop status [--json]          structured snapshot of the loop's live state
                                 (pulse, last tick, workers, cost) — for an
@@ -35,11 +42,28 @@ Usage:
                                 start a worker session (used by the tick AI)
   looop attach <id>              attach your terminal to a worker (in-process;
                                 detach with Ctrl-\ Ctrl-\)
+  looop detach <id>              force-detach any other terminal from a session
+  looop log <id> [--tail N] [--grep RE] [--since N] [--follow] [--raw] [--json]
+                                show / tail / grep / follow a session's output
+  looop shot <id> [--ansi|--json] [--trim]
+                                render the session's current visible screen
+  looop send <id> <text...> [-n] [--json]
+                                type text into a session's stdin (-n: no newline)
+  looop key <id> <KEY...> [--json]
+                                send named keys (Enter, Up, Esc, C-c, F1, …)
+  looop expect <id> <REGEX> [--timeout DUR] [--from-now] [--screen] [--json]
+                                block until a regex appears (exit 124 on timeout)
+  looop wait <id> [--timeout DUR]
+                                block until the session exits; return its code
+  looop wait-idle <id> [--settle DUR] [--timeout DUR]
+                                block until output is quiet for --settle
+  looop resize <id> <COLSxROWS>  resize a session's terminal (e.g. 120x40)
+  looop restart <id>             restart the wrapped command in a session
   looop kill <id>                terminate a worker session
   looop flag <id> [message]      raise a worker's attention flag
   looop unflag <id>              clear a worker's attention flag
-  looop prune                    clear finished worker corpses (the pulse also
-                                does this every tick)
+  looop prune                    clear finished worker corpses (looop-scoped;
+                                the pulse also does this every tick)
   looop cost [today|all|--json]   report LLM spend recorded in the cost ledger
                                 (ticks + manual goal runs are metered
                                 automatically; workers self-report via
@@ -51,14 +75,17 @@ Usage:
   looop help                     show this help
 
 Paths (override via env LOOOP_CONFIG / LOOOP_DATA_DIR):
-  config  {config}
-  data    {data}
+  config    {config}
+  data      {data}
+  sessions  {fleet}
 
-looop is a single self-contained binary: the worker fleet (babysit) is linked
+looop is a single self-contained binary: session management (babysit) is linked
 as a LIBRARY and driven entirely in-process — no `babysit` executable required.
-looop scopes the fleet to this profile automatically.
+Sessions are self-contained per profile: they live under <data>/sessions, keyed
+by a bare id (the pulse is `pulse`). looop passes that root to the library
+explicitly — it never sets $BABYSIT_DIR and never touches a shared ~/.babysit.
   looop ls                      list worker sessions (⚑ = waiting for you)
-  looop ls --watch              watch the fleet live, in place
+  looop ls --watch              watch sessions live, in place
   looop attach <id>             enter a waiting session and talk to it
   looop kill <id>               end a session ; looop flag/unflag <id> ; looop prune
 
@@ -70,5 +97,6 @@ Fix judgment by editing PLAYBOOK.md (in the data dir) and committing — it take
 effect next tick."#,
         config = paths.config.display(),
         data = paths.data_dir.display(),
+        fleet = paths.data_dir.join("sessions").display(),
     );
 }
