@@ -60,7 +60,7 @@ pub fn cmd_up(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     let UpOpts { watch, json } = opts;
 
     if session::is_alive(paths, PULSE_SESSION) {
-        println!("looop: pulse already running ({PULSE_SESSION}) — see it: looop ls");
+        println!("looop: pulse already running — see it: looop ls");
         if watch {
             println!("looop: watching {PULSE_SESSION} (Ctrl-C to stop watching)");
             session::watch(paths, PULSE_SESSION)?;
@@ -85,7 +85,7 @@ pub fn cmd_up(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     session::spawn_detached(paths, vec![bin, "_pulse".to_string()], PULSE_SESSION)?;
 
     println!(
-        "looop: pulse started ({PULSE_SESSION}){}",
+        "looop: pulse started{}",
         if json { " [json]" } else { "" }
     );
     if watch {
