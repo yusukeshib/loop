@@ -118,6 +118,23 @@ fn worker_target(id: &str) -> Result<String> {
     Ok(s.to_string())
 }
 
+/// A short, stable word naming the action's category — for the typed stdout
+/// line and the `action` field on the decided event.
+pub fn kind(action: &Action) -> &'static str {
+    match action {
+        Action::Noop { .. } => "noop",
+        Action::RunShell { .. } => "shell",
+        Action::WriteGoal { .. } => "goal",
+        Action::ArchiveGoal { .. } => "archive",
+        Action::WriteSensor { .. } => "sensor",
+        Action::WritePlaybook { .. } => "playbook",
+        Action::StartWorker { .. } => "worker",
+        Action::SteerSession { .. } => "steer",
+        Action::SendKey { .. } => "key",
+        Action::RestartSession { .. } => "restart",
+    }
+}
+
 fn with_trailing_newline(body: &str) -> String {
     if body.ends_with('\n') {
         body.to_string()
@@ -238,9 +255,9 @@ fn append_journal(paths: &Paths, line: &str) -> Result<()> {
 /// Consume the one-shot decision the decider left in `.decision.json` (if any):
 /// execute it, append the journal line, apply any cadence nudge, and remove the
 /// file so a stale decision can never re-run. Returns `None` when no decision
-/// was written this beat, else the executed action's human summary (or the
-/// parse/execution error — the file is removed regardless).
-pub fn consume_decision(paths: &Paths) -> Option<Result<String>> {
+/// was written this beat, else what was executed (or the parse/execution error
+/// — the file is removed regardless).
+pub fn consume_decision(paths: &Paths) -> Option<Result<Decided>> {
     let path = paths.data_dir.join(DECISION_FILE);
     let raw = fs::read_to_string(&path).ok()?; // None ⇒ decider wrote nothing
     let _ = fs::remove_file(&path); // one-shot, win or lose
@@ -248,17 +265,31 @@ pub fn consume_decision(paths: &Paths) -> Option<Result<String>> {
     Some((|| {
         let decision = Decision::parse(&raw)?;
         let summary = execute(paths, &decision.action)?;
-        let line = if decision.journal.trim().is_empty() {
+        let journal = if decision.journal.trim().is_empty() {
             summary.clone()
         } else {
             decision.journal.clone()
         };
-        append_journal(paths, &line)?;
+        append_journal(paths, &journal)?;
         if let Some(secs) = decision.next_interval_s {
             let _ = fs::write(paths.data_dir.join(".next-interval"), format!("{secs}\n"));
         }
-        Ok(summary)
+        Ok(Decided {
+            kind: kind(&decision.action),
+            summary,
+            journal,
+        })
     })())
+}
+
+/// What looop executed this beat: the action category, the executor's concise
+/// summary, and the journal line that was appended (the "why"). The caller
+/// renders the single typed stdout line from this.
+#[derive(Debug, PartialEq)]
+pub struct Decided {
+    pub kind: &'static str,
+    pub summary: String,
+    pub journal: String,
 }
 
 #[cfg(test)]
@@ -410,10 +441,12 @@ mod tests {
         )
         .unwrap();
 
-        let summary = consume_decision(&p)
+        let d = consume_decision(&p)
             .expect("a decision was present")
             .unwrap();
-        assert_eq!(summary, "noop · all quiet");
+        assert_eq!(d.kind, "noop");
+        assert_eq!(d.summary, "noop · all quiet");
+        assert_eq!(d.journal, "did nothing");
         assert!(!path.exists(), "decision file is one-shot");
 
         let journal = fs::read_to_string(p.journal()).unwrap();
