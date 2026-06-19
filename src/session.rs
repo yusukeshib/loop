@@ -97,7 +97,7 @@ pub fn cmd_start_session(paths: &Paths, args: &[String]) -> Result<ExitCode> {
 
     // The worker's session id IS the goal id (no prefix — the fleet root is
     // looop-exclusive). `pulse` is reserved for the control loop, so a worker
-    // can never collide with the 親玉.
+    // can never collide with the pulse.
     if id.as_str() == PULSE_SESSION {
         eprintln!("start-session: '{id}' is reserved for the pulse; pick another id");
         return Ok(ExitCode::from(1));
@@ -448,7 +448,7 @@ pub fn cmd_detach(paths: &Paths, args: &[String]) -> Result<ExitCode> {
 // ~/.babysit, and bare session ids (the pulse is `pulse`).
 // ============================================================================
 
-/// The session id the pulse (親玉) runs under when started as a service
+/// The session id the pulse runs under when started as a service
 /// (`looop up`). It is reserved: a worker can never take this id (see
 /// `session::cmd_start_session`), so the single control-plane session can't
 /// collide with a goal-named worker.
@@ -482,7 +482,7 @@ pub struct Session {
 }
 
 impl Session {
-    /// The pulse session is the 親玉, not a worker.
+    /// The pulse session is the control loop, not a worker.
     pub fn is_pulse(&self) -> bool {
         self.id == PULSE_SESSION
     }
@@ -511,7 +511,7 @@ pub fn list(paths: &Paths) -> Vec<Session> {
     }
 }
 
-/// Worker sessions only — the pulse (親玉) is excluded. Everything that reasons
+/// Worker sessions only — the pulse is excluded. Everything that reasons
 /// about "the fleet the pulse manages" (cadence, world hash, tick prompt,
 /// status, flag-surfacing) uses this so the pulse never counts itself.
 pub fn list_workers(paths: &Paths) -> Vec<Session> {

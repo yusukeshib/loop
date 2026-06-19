@@ -1,6 +1,6 @@
 //! The pulse-as-a-service layer. Historically `looop` (no args) ran the pulse in
 //! the foreground forever; you watched it scroll. The service model treats the
-//! pulse (the 親玉) as just one more babysit-supervised session — uniform with
+//! pulse as just one more babysit-supervised session — uniform with
 //! the workers — so a separate `looop watch` window can tail it the same way it
 //! tails any agent, and the pulse keeps running when you close the window.
 //!

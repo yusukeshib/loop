@@ -14,8 +14,8 @@ pub fn print(paths: &Paths) {
     println!(
         r#"
 Usage:
-  looop up [--watch] [--json]    run the pulse as a DETACHED service (the 親玉
-                                becomes a babysit session). --json makes the
+  looop up [--watch] [--json]    run the pulse as a DETACHED service (it becomes
+                                a supervised session). --json makes the
                                 pulse emit NDJSON to its log (agent-readable);
                                 --watch follows that output after starting.
                                 Idempotent: a live pulse is left running.
