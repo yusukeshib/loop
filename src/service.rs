@@ -68,7 +68,7 @@ pub fn cmd_up(paths: &Paths, args: &[String]) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     if session::status_exists(paths, PULSE_SESSION) {
-        session::prune(paths); // reuse the id held by a dead corpse
+        session::reap(paths, PULSE_SESSION); // reuse the pulse id (targeted)
     }
 
     // Propagate the output format to the detached pulse: spawn_detached re-execs
@@ -109,13 +109,14 @@ pub fn cmd_down(paths: &Paths) -> Result<ExitCode> {
     }
     match session::kill_quiet(paths, PULSE_SESSION) {
         Ok(()) => {
-            // Wait for the supervisor to record the exit, then prune the corpse
-            // so `ls` is clean and a re-`up` starts fresh.
+            // Wait for the supervisor to record the exit, then reap JUST the
+            // pulse corpse so `ls` is clean and a re-`up` starts fresh — worker
+            // transcripts are left for the retention window, not nuked here.
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             while session::is_alive(paths, PULSE_SESSION) && std::time::Instant::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            session::prune(paths);
+            session::reap(paths, PULSE_SESSION);
             println!("looop: pulse stopped");
             Ok(ExitCode::SUCCESS)
         }

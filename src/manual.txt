@@ -63,7 +63,10 @@ CODE / CONFIG / DATA are cleanly separated (all overridable by env)
             PLAYBOOK.md  goals/  journal.md  sensors/*.sh   <- commit these
             snapshots/ prompts/ runs/ .lock .last-tick-hash <- scratch
             sessions/<id>/  <- worker + pulse sessions (babysit state, per
-                               profile; no $BABYSIT_DIR, no shared ~/.babysit)
+                               profile; no $BABYSIT_DIR, no shared ~/.babysit).
+                               System scratch: auto-reaped after a retention
+                               window ($LOOOP_SESSION_TTL / session_ttl, def 3d).
+                               Deliverables go to reports/, NOT here.
             (runs/<id>/{prompt.md,output.log} = a replayable archive per beat)
 
 BOOTSTRAP

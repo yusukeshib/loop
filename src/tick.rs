@@ -17,8 +17,13 @@ pub fn tick(paths: &Paths) -> bool {
     let _ = seed::ensure_dirs(paths);
     events::emit(paths, "tick_start", serde_json::json!({}));
 
-    // 0. housekeeping (deterministic, no AI).
-    session::prune(paths);
+    // 0. housekeeping (deterministic, no AI). Reap only AGED corpses — a worker
+    // that just finished keeps its transcript for the retention window; sessions/
+    // is looop-owned scratch, bounded here, never the user's deliverables.
+    session::prune_aged(
+        paths,
+        std::time::Duration::from_secs(crate::run::session_ttl_secs(paths)),
+    );
     gate::reap_stale_claims(paths);
 
     // 1. sense — level-triggered: wipe last beat's snapshots first.
