@@ -61,6 +61,11 @@ pub enum Action {
     SendKey { id: String, keys: Vec<String> },
     /// Restart a wedged worker's wrapped command.
     RestartSession { id: String },
+    /// Surface a blocker / notice to the human. There is NO parked session and
+    /// NO state file: the notice is just journaled (and shown on the tick line);
+    /// the human resolves it by editing the world (a goal / the PLAYBOOK /
+    /// creds), which the next tick observes — level-triggered, no reply channel.
+    SendNotification { message: String },
 }
 
 /// One tick's decision: the action plus the metadata that rides alongside it.
@@ -132,6 +137,7 @@ pub fn kind(action: &Action) -> &'static str {
         Action::SteerSession { .. } => "steer",
         Action::SendKey { .. } => "key",
         Action::RestartSession { .. } => "restart",
+        Action::SendNotification { .. } => "notify",
     }
 }
 
@@ -246,6 +252,15 @@ fn execute_inner(paths: &Paths, action: &Action) -> Result<String> {
             let s = worker_target(id)?;
             session::restart(paths, &s, false)?;
             Ok(format!("restart {s}"))
+        }
+
+        Action::SendNotification { message } => {
+            let msg = message.trim();
+            if msg.is_empty() {
+                bail!("send_notification: empty message");
+            }
+            // No file, no parked session: the journal line IS the notice.
+            Ok(format!("notify · {msg}"))
         }
     }
 }
@@ -393,6 +408,12 @@ mod tests {
                 r#"{"action":"restart_session","id":"w"}"#,
                 Action::RestartSession { id: "w".into() },
             ),
+            (
+                r#"{"action":"send_notification","message":"creds expired"}"#,
+                Action::SendNotification {
+                    message: "creds expired".into(),
+                },
+            ),
         ] {
             assert_eq!(Decision::parse(json).unwrap().action, want, "json: {json}");
         }
@@ -465,6 +486,28 @@ mod tests {
 
         let next = fs::read_to_string(p.data_dir.join(".next-interval")).unwrap();
         assert_eq!(next.trim(), "30");
+    }
+
+    #[test]
+    fn send_notification_journals_without_state_file() {
+        let p = Paths::temp();
+        let summary = execute(
+            &p,
+            &Action::SendNotification {
+                message: "goals A and B conflict".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(summary, "notify · goals A and B conflict");
+        assert!(
+            execute(
+                &p,
+                &Action::SendNotification {
+                    message: "  ".into()
+                }
+            )
+            .is_err()
+        );
     }
 
     #[test]
