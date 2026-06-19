@@ -162,14 +162,14 @@ fn full_session(id: &str) -> String {
 /// The pulse is the control loop, NOT a worker: refuse worker-management verbs
 /// aimed at it so a stray `looop kill pulse` / `attach pulse` can't decapitate
 /// or hijack the loop. Observe it with `looop watch`/`log`; control it with
-/// `looop up`/`down`. Returns true (and prints guidance) when `session` is the
+/// a bare `looop`. Returns true (and prints guidance) when `session` is the
 /// reserved pulse id — the caller should then bail with a non-zero code.
 fn reject_pulse(session: &str, verb: &str) -> bool {
     if session == PULSE_SESSION {
         eprintln!(
             "looop {verb}: '{PULSE_SESSION}' is the control loop, not a worker — observe it with \
-             `looop watch {PULSE_SESSION}` / `looop log {PULSE_SESSION}`, control it with \
-             `looop up` / `looop down`"
+             `looop watch {PULSE_SESSION}` / `looop log {PULSE_SESSION}`, start it by running \
+             `looop` (Ctrl-C stops it)"
         );
         true
     } else {
@@ -502,7 +502,7 @@ pub fn cmd_detach(paths: &Paths, args: &[String]) -> Result<ExitCode> {
 // ============================================================================
 
 /// The session id the pulse runs under when started as a service
-/// (`looop up`). It is reserved: a worker can never take this id (see
+/// (a bare `looop`). It is reserved: a worker can never take this id (see
 /// `session::cmd_start_session`), so the single control-plane session can't
 /// collide with a goal-named worker.
 pub const PULSE_SESSION: &str = "pulse";
@@ -664,7 +664,7 @@ pub fn kill(paths: &Paths, session: &str) -> anyhow::Result<()> {
 }
 
 /// Like `kill` but swallows babysit's "killed session …" stdout line, so a
-/// caller that prints its own message (e.g. `looop down`) stays single-line.
+/// caller that prints its own message (e.g. the foreground teardown) stays single-line.
 pub fn kill_quiet(paths: &Paths, session: &str) -> anyhow::Result<()> {
     suppress_stdout(|| kill(paths, session))
 }
@@ -713,6 +713,29 @@ pub fn watch(paths: &Paths, session: &str) -> anyhow::Result<()> {
         true,  // follow
         false, // json
     ))
+}
+
+/// Foreground stream for `looop`: follow a session's output live, but return
+/// (rather than letting Ctrl-C kill the whole process) when the user interrupts
+/// OR the followed session exits. The caller (`cmd_serve`) then runs teardown,
+/// so closing the window stops the loop instead of orphaning it.
+pub fn serve_follow(paths: &Paths, session: &str) -> anyhow::Result<()> {
+    rt().block_on(async {
+        let bs = paths.sessions();
+        let follow = bs.log(
+            Some(session.to_string()),
+            None,  // tail: whole log, then follow
+            None,  // grep
+            true,  // raw: keep ANSI color
+            None,  // since: from the start
+            true,  // follow
+            false, // json
+        );
+        tokio::select! {
+            r = follow => r,                       // pulse exited / log ended
+            _ = tokio::signal::ctrl_c() => Ok(()), // user pressed Ctrl-C
+        }
+    })
 }
 
 /// `looop log <id>` — show / tail / grep / follow a session's recorded output.
@@ -952,7 +975,7 @@ pub fn any_worker_alive(paths: &Paths) -> bool {
 }
 
 /// Block (briefly) until a session is registered and alive. For callers that
-/// spawn detached then immediately follow it (e.g. `looop up --watch`): the
+/// spawn detached then immediately follow it (e.g. the foreground `looop`): the
 /// supervisor needs a beat to register the session, so following it instantly
 /// races the spawn (`no session matching …`). Returns true once alive, false if
 /// it never came up within `timeout`.

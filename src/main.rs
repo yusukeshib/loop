@@ -41,14 +41,17 @@ fn main() -> ExitCode {
     util::init_color();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // A bare `looop` is invalid: with `up` / `watch` / `tick` all explicit, a
-    // no-arg invocation silently doing something is more surprising than
-    // helpful. Require a verb (start the pulse with `looop up`).
+    // A bare `looop` (or `looop --json`) IS the command: it brings the pulse up
+    // as a session, streams it, and tears it down on exit. There is no detached
+    // up/down pair anymore — the foreground invocation owns the loop's lifecycle.
     let Some(cmd) = args.first().map(String::as_str) else {
-        eprintln!(
-            "looop: no command — try: up [--watch], down, watch <id>, tick, ls, status, log, send, key, attach, kill, flag, unflag, prune, help"
-        );
-        return ExitCode::from(1);
+        return match deps::require_deps(&paths).and_then(|_| service::cmd_serve(&paths, &[])) {
+            Ok(code) => code,
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::from(1)
+            }
+        };
     };
     let rest = &args[1..];
 
@@ -67,10 +70,10 @@ fn main() -> ExitCode {
         "run" | "loop" if rest.first().map(String::as_str) == Some("--detached-id") => {
             session::run_detached_worker(rest).map(|c| ExitCode::from(c.clamp(0, 255) as u8))
         }
+        // A leading flag with no verb is still the foreground serve (`looop --json`).
+        "--json" => deps::require_deps(&paths).and_then(|_| service::cmd_serve(&paths, &args)),
         "tick" => deps::require_deps(&paths).and_then(|_| tick::cmd_tick(&paths)),
-        // The pulse-as-a-service trio + its read-only window.
-        "up" => deps::require_deps(&paths).and_then(|_| service::cmd_up(&paths, rest)),
-        "down" => service::cmd_down(&paths, rest),
+        // The pulse foreground + its read-only window.
         "watch" => deps::require_deps(&paths).and_then(|_| session::cmd_watch(&paths, rest)),
         "log" | "logs" => deps::require_deps(&paths).and_then(|_| session::cmd_log(&paths, rest)),
         "shot" | "screenshot" => {
@@ -86,7 +89,7 @@ fn main() -> ExitCode {
         "resize" => deps::require_deps(&paths).and_then(|_| session::cmd_resize(&paths, rest)),
         "restart" => deps::require_deps(&paths).and_then(|_| session::cmd_restart(&paths, rest)),
         "detach" => deps::require_deps(&paths).and_then(|_| session::cmd_detach(&paths, rest)),
-        // Hidden: the headless pulse body babysit wraps under a PTY (`looop up`).
+        // Hidden: the headless pulse body babysit wraps under a PTY (a bare `looop`).
         "_pulse" => deps::require_deps(&paths).and_then(|_| service::cmd_pulse(&paths)),
         "ls" => deps::require_deps(&paths).and_then(|_| ls_inproc(&paths, rest)),
         "status" => status::cmd_status(&paths, rest),
@@ -119,7 +122,7 @@ fn main() -> ExitCode {
         "_cost" => cost::cmd_cost_record(&paths, rest),
         other => {
             eprintln!(
-                "looop: unknown command '{other}' (try: up [--watch], down, watch <id>, tick, ls, status, log, shot, send, key, expect, wait, wait-idle, resize, restart, attach, detach, kill, flag, unflag, prune, help)"
+                "looop: unknown command '{other}' (run `looop` to start the loop; or: watch <id>, tick, ls, status, log, shot, send, key, expect, wait, wait-idle, resize, restart, attach, detach, kill, flag, unflag, prune, help)"
             );
             Ok(ExitCode::from(1))
         }

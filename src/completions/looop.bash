@@ -9,7 +9,7 @@ _looop() {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="up down watch tick ls status log shot send key expect wait wait-idle resize restart start-session attach detach kill flag unflag prune cost config version help"
+    local subcommands="watch tick ls status log shot send key expect wait wait-idle resize restart start-session attach detach kill flag unflag prune cost config version help"
 
     # session ids including the pulse (for read/observe verbs)
     __looop_session_list() {
@@ -85,9 +85,6 @@ _looop() {
             else
                 COMPREPLY=($(compgen -W "--settle --timeout" -- "$cur"))
             fi
-            ;;
-        up)
-            COMPREPLY=($(compgen -W "--watch -w --json" -- "$cur"))
             ;;
         ls)
             COMPREPLY=($(compgen -W "--json --watch -w --interval -n" -- "$cur"))
