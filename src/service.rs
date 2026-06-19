@@ -84,12 +84,14 @@ pub fn cmd_up(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     let bin = paths.bin.to_string_lossy().to_string();
     session::spawn_detached(paths, vec![bin, "_pulse".to_string()], PULSE_SESSION)?;
 
-    let hint = paths.looop_hint_env();
     println!(
-        "looop: pulse started ({PULSE_SESSION}){} — watch: {hint}looop watch pulse · stop: {hint}looop down",
+        "looop: pulse started ({PULSE_SESSION}){}",
         if json { " [json]" } else { "" }
     );
     if watch {
+        // The detached supervisor needs a beat to register the session; wait so
+        // we don't race it and get `no session matching pulse`.
+        session::await_alive(paths, PULSE_SESSION, std::time::Duration::from_secs(5));
         println!("looop: watching {PULSE_SESSION} (Ctrl-C to stop watching)");
         session::watch(paths, PULSE_SESSION)?;
     }
@@ -100,18 +102,28 @@ pub fn cmd_up(paths: &Paths, args: &[String]) -> Result<ExitCode> {
 /// is stale-reclaimed on the next `looop up` (cmd_run checks pid liveness), so
 /// no extra cleanup is needed here.
 pub fn cmd_down(paths: &Paths) -> Result<ExitCode> {
-    if !session::status_exists(paths, PULSE_SESSION) {
+    // Only a LIVE pulse is something to stop. A leftover corpse (killed/exited)
+    // isn't: prune it and report nothing-to-do, so a second `down` doesn't try
+    // to re-kill a finished session and error.
+    if !session::is_alive(paths, PULSE_SESSION) {
+        session::prune(paths);
         println!("looop: no pulse session to stop");
         return Ok(ExitCode::SUCCESS);
     }
     match session::kill_quiet(paths, PULSE_SESSION) {
         Ok(()) => {
+            // Wait for the supervisor to record the exit, then prune the corpse
+            // so `ls` is clean and a re-`up` starts fresh.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while session::is_alive(paths, PULSE_SESSION) && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
             session::prune(paths);
             println!("looop: pulse stopped");
             Ok(ExitCode::SUCCESS)
         }
         Err(e) => {
-            util::log(&format!("{}down: {e}{}", util::red(), util::rst()));
+            util::event(util::Level::Error, "down", &e.to_string(), &[]);
             Ok(ExitCode::from(1))
         }
     }

@@ -848,6 +848,24 @@ pub fn any_worker_alive(paths: &Paths) -> bool {
     list_workers(paths).iter().any(|s| s.alive)
 }
 
+/// Block (briefly) until a session is registered and alive. For callers that
+/// spawn detached then immediately follow it (e.g. `looop up --watch`): the
+/// supervisor needs a beat to register the session, so following it instantly
+/// races the spawn (`no session matching …`). Returns true once alive, false if
+/// it never came up within `timeout`.
+pub fn await_alive(paths: &Paths, session: &str, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if is_alive(paths, session) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
