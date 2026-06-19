@@ -159,7 +159,10 @@ impl Sensor {
 /// Every sensor for this beat: the user `sensors/*.sh` followed by the fixed
 /// system probes.
 fn all_sensors(paths: &Paths) -> Vec<Sensor> {
-    let mut v: Vec<Sensor> = sensor_scripts(paths).into_iter().map(Sensor::User).collect();
+    let mut v: Vec<Sensor> = sensor_scripts(paths)
+        .into_iter()
+        .map(Sensor::User)
+        .collect();
     v.extend(
         SYSTEM_SENSORS
             .iter()
@@ -273,7 +276,10 @@ pub fn run_all(paths: &Paths, snap_dir: &Path, verbose: bool) {
                 util::event(
                     Level::Error,
                     "sense.fail",
-                    &format!("{} failed ({}s) — see snapshots/{}.err", r.name, r.secs, r.name),
+                    &format!(
+                        "{} failed ({}s) — see snapshots/{}.err",
+                        r.name, r.secs, r.name
+                    ),
                     &[
                         ("sensor", serde_json::json!(r.name)),
                         ("secs", serde_json::json!(r.secs)),
