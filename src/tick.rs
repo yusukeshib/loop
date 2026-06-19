@@ -86,10 +86,10 @@ pub fn tick(paths: &Paths) -> bool {
         serde_json::json!({ "runner": runner_name, "run_id": cost_id }),
     );
 
-    // In human mode the runner's live output is indented under the step; in JSON
-    // mode `run_streamed` suppresses stdout (tees to files only) so the machine
-    // stream stays one-object-per-line.
-    let gutter = format!("{}│{} ", util::dim(), util::rst());
+    // The runner's live output streams flat under the `tick.start` step (no
+    // gutter art). In JSON mode `run_streamed` suppresses stdout (tees to files
+    // only) so the machine stream stays one-object-per-line.
+    let gutter = "";
     let tee: Vec<PathBuf> = vec![run_dir.join("output.log"), paths.data_dir.join("tick.log")];
     let cost_env = [
         ("LOOOP_COST_KIND", "tick"),
@@ -98,7 +98,7 @@ pub fn tick(paths: &Paths) -> bool {
     ];
 
     let mut acted = false;
-    if runner::run_streamed(paths, &tick_cmd, &prompt_file, &cost_env, &tee, &gutter) {
+    if runner::run_streamed(paths, &tick_cmd, &prompt_file, &cost_env, &tee, gutter) {
         let _ = fs::write(paths.data_dir.join(".last-tick-hash"), format!("{hash}\n"));
         acted = true;
         let last_line = journal_tail(paths);

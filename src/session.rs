@@ -592,13 +592,14 @@ pub fn detach(paths: &Paths, session: &str, json: bool) -> anyhow::Result<()> {
 
 /// `looop watch <id>` — follow a session's output read-only (tail -f): the full
 /// log so far, then live output until the session exits. The non-interactive
-/// twin of `attach`.
+/// twin of `attach`, so it preserves the session's ANSI color (`raw`) — the
+/// pulse runs under a PTY and emits colored lines we want to show as-is.
 pub fn watch(paths: &Paths, session: &str) -> anyhow::Result<()> {
     rt().block_on(paths.sessions().log(
         Some(session.to_string()),
         None,  // tail: whole log, then follow
         None,  // grep
-        false, // raw
+        true,  // raw: keep ANSI color (twin of attach, not a cleaned log)
         None,  // since: from the start
         true,  // follow
         false, // json

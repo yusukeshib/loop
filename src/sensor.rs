@@ -6,7 +6,7 @@
 //!     can't silently inflate prompt context + LLM cost on every beat.
 
 use crate::paths::Paths;
-use crate::util;
+use crate::util::{self, Level};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -93,14 +93,12 @@ pub fn sensor_scripts(paths: &Paths) -> Vec<PathBuf> {
 pub fn run_all(paths: &Paths, snap_dir: &Path, verbose: bool) {
     let scripts = sensor_scripts(paths);
     if verbose && !scripts.is_empty() {
-        util::log(&format!(
-            "{}sensing the world{} {}({} sensors){}…",
-            util::b(),
-            util::rst(),
-            util::dim(),
-            scripts.len(),
-            util::rst()
-        ));
+        util::event(
+            Level::Step,
+            "sense",
+            &format!("sensing the world ({} sensors)", scripts.len()),
+            &[("sensors", serde_json::json!(scripts.len()))],
+        );
     }
     for s in scripts {
         let name = s
@@ -115,15 +113,15 @@ pub fn run_all(paths: &Paths, snap_dir: &Path, verbose: bool) {
         let secs = t0.elapsed().as_secs();
         if verbose {
             if rc == 0 {
-                util::log(&format!(
-                    "  {}✓{} {} {}({}s){}",
-                    util::grn(),
-                    util::rst(),
-                    name,
-                    util::dim(),
-                    secs,
-                    util::rst()
-                ));
+                util::event(
+                    Level::Ok,
+                    "sense.ok",
+                    &format!("{name} ({secs}s)"),
+                    &[
+                        ("sensor", serde_json::json!(name)),
+                        ("secs", serde_json::json!(secs)),
+                    ],
+                );
             } else {
                 if rc == 124 {
                     let to = env_num("LOOOP_SENSOR_TIMEOUT", 60);
@@ -132,16 +130,15 @@ pub fn run_all(paths: &Paths, snap_dir: &Path, verbose: bool) {
                         let _ = writeln!(f, "sensor timed out after {to}s (LOOOP_SENSOR_TIMEOUT)");
                     });
                 }
-                util::log(&format!(
-                    "  {}✗ {} FAILED{} {}({}s) — see snapshots/sensor-{}.err{}",
-                    util::red(),
-                    name,
-                    util::rst(),
-                    util::dim(),
-                    secs,
-                    name,
-                    util::rst()
-                ));
+                util::event(
+                    Level::Error,
+                    "sense.fail",
+                    &format!("{name} failed ({secs}s) — see snapshots/sensor-{name}.err"),
+                    &[
+                        ("sensor", serde_json::json!(name)),
+                        ("secs", serde_json::json!(secs)),
+                    ],
+                );
             }
         } else if rc == 124 {
             let to = env_num("LOOOP_SENSOR_TIMEOUT", 60);
