@@ -109,7 +109,7 @@ pub fn cmd_start_session(paths: &Paths, args: &[String]) -> Result<ExitCode> {
             eprintln!("start-session: session {session} is already running");
             return Ok(ExitCode::from(1));
         }
-        prune(paths); // reuse the id held by a dead corpse
+        reap(paths, &session); // reuse the id held by a dead corpse (targeted)
     }
 
     // Prompt via file (avoids quoting hell; also a record of the ask), with the
@@ -518,13 +518,28 @@ pub fn list_workers(paths: &Paths) -> Vec<Session> {
     list(paths).into_iter().filter(|s| !s.is_pulse()).collect()
 }
 
-/// Clear exited/dead-owner corpses, IN-PROCESS and SILENTLY. babysit's own
-/// `prune` prints (it is a CLI handler), which would pollute looop's pretty
-/// output, so we drive the same decision over the library's lower-level
-/// session/context API. The fleet root is looop-exclusive, so every corpse here
-/// is ours. Best-effort: any error is ignored.
-pub fn prune(paths: &Paths) {
-    use ::babysit::session::{self, State};
+/// Is this session a reapable corpse? (exited/killed, or a dead owner with no
+/// fresh status). Never reaps a session whose meta we couldn't parse — we don't
+/// nuke blind.
+fn corpse_dead(state: Option<::babysit::session::State>, alive: bool) -> bool {
+    use ::babysit::session::State;
+    match state {
+        Some(State::Exited | State::Killed) => true,
+        Some(State::Starting | State::Running) if !alive => true,
+        None if !alive => true,
+        _ => false,
+    }
+}
+
+/// Reap dead corpses whose session dir is older than `max_age`, IN-PROCESS and
+/// SILENTLY. sessions/ is system scratch (the durable artifacts a worker
+/// produces live in reports/ + git + its sandbox — see the CONTRACT), so looop
+/// owns its lifecycle. But a corpse's `output.log` is the only transcript of
+/// what that agent did, so the per-tick housekeeping passes a RETENTION window
+/// rather than nuking it the instant the worker finishes. The fleet root is
+/// looop-exclusive, so every corpse here is ours. Best-effort: errors ignored.
+pub fn prune_aged(paths: &Paths, max_age: std::time::Duration) {
+    use ::babysit::session;
     let bs = paths.sessions();
     rt().block_on(async {
         let ids = match session::list_ids(&bs).await {
@@ -537,15 +552,50 @@ pub fn prune(paths: &Paths) {
             };
             let status = session::read_status(&bs, &id).await.ok();
             let alive = session::is_pid_alive(meta.babysit_pid);
-            let dead = match status.as_ref().map(|s| s.state) {
-                Some(State::Exited | State::Killed) => true,
-                Some(State::Starting | State::Running) if !alive => true,
-                None if !alive => true,
-                _ => false,
-            };
-            if dead {
-                let _ = tokio::fs::remove_dir_all(bs.session_dir(&id)).await;
+            if !corpse_dead(status.as_ref().map(|s| s.state), alive) {
+                continue;
             }
+            let dir = bs.session_dir(&id);
+            // Age ≈ time since the dir last changed (a dead session stops
+            // writing). max_age == 0 ⇒ reap now; undeterminable age ⇒ KEEP (the
+            // retention bias favors preserving a transcript we can't date —
+            // explicit `looop prune` is the catch-all).
+            let old = max_age.is_zero()
+                || tokio::fs::metadata(&dir)
+                    .await
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.elapsed().ok())
+                    .map(|age| age >= max_age)
+                    .unwrap_or(false);
+            if old {
+                let _ = tokio::fs::remove_dir_all(&dir).await;
+            }
+        }
+    });
+}
+
+/// Reap EVERY dead corpse now, no retention — the explicit `looop prune` verb's
+/// "clean it all up" semantics.
+pub fn prune(paths: &Paths) {
+    prune_aged(paths, std::time::Duration::ZERO);
+}
+
+/// Targeted reap: remove just `session`'s dir IF it's a dead corpse, so its id
+/// can be reused — without disturbing sibling sessions' retained transcripts.
+/// Used when reclaiming one specific id (the pulse on `up`/`down`, a worker id
+/// on restart).
+pub fn reap(paths: &Paths, session: &str) {
+    use ::babysit::session;
+    let bs = paths.sessions();
+    rt().block_on(async {
+        let Ok(meta) = session::read_meta(&bs, session).await else {
+            return;
+        };
+        let status = session::read_status(&bs, session).await.ok();
+        let alive = session::is_pid_alive(meta.babysit_pid);
+        if corpse_dead(status.as_ref().map(|s| s.state), alive) {
+            let _ = tokio::fs::remove_dir_all(bs.session_dir(session)).await;
         }
     });
 }

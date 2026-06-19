@@ -62,8 +62,9 @@ Usage:
   looop kill <id>                terminate a worker session
   looop flag <id> [message]      raise a worker's attention flag
   looop unflag <id>              clear a worker's attention flag
-  looop prune                    clear finished worker corpses (looop-scoped;
-                                the pulse also does this every tick)
+  looop prune                    clear ALL finished worker corpses now (the pulse
+                                auto-reaps only ones older than the retention
+                                window each tick — LOOOP_SESSION_TTL, default 3d)
   looop cost [today|all|--json]   report LLM spend recorded in the cost ledger
                                 (ticks + manual goal runs are metered
                                 automatically; workers self-report via

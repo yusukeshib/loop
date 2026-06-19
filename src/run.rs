@@ -14,6 +14,27 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+/// Retention for `sessions/<id>/` corpses (system scratch): env
+/// `LOOOP_SESSION_TTL` (seconds) > config `session_ttl` > 3 days. looop owns
+/// reaping its own scratch; a worker's durable output lives in reports/ + git +
+/// its sandbox, never here, so this only bounds debug transcripts.
+pub(crate) fn session_ttl_secs(paths: &Paths) -> u64 {
+    const DEFAULT: u64 = 3 * 24 * 60 * 60; // 3 days
+    if let Ok(v) = std::env::var("LOOOP_SESSION_TTL")
+        && let Ok(n) = v.trim().parse::<u64>()
+    {
+        return n;
+    }
+    Config::load(paths)
+        .ok()
+        .and_then(|c| {
+            c.root
+                .get("session_ttl")
+                .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
+        })
+        .unwrap_or(DEFAULT)
+}
+
 /// Resolve a cadence knob: env var > config key > fallback.
 fn interval(env: &str, cfg: &Config, key: &str, fallback: u64) -> u64 {
     if let Ok(v) = std::env::var(env)
@@ -192,7 +213,10 @@ pub fn cmd_run_goal(paths: &Paths, id: &str) -> Result<ExitCode> {
         }
     }
 
-    session::prune(paths);
+    session::prune_aged(
+        paths,
+        std::time::Duration::from_secs(session_ttl_secs(paths)),
+    );
     gate::reap_stale_claims(paths);
 
     // Private snapshots dir so a concurrent pulse tick can't tear our readings.
