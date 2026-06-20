@@ -11,7 +11,7 @@ is newer than the last-improved date below — make ONE small improvement:
   finished run never blocks tomorrow's (RULE: recurring goals use dated ids):
      looop start-session playbook-YYYYMMDD "<the task above>"
 - PLAYBOOK changes affect every future tick, so PROPOSE the diff and
-  `looop flag` for my confirmation before committing.
+  `looop _ flag` for my confirmation before committing.
 - When done, set last-improved below to today's date. (The pulse auto-prunes
   finished sessions each tick; `looop prune` clears them on demand.)
 

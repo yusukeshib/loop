@@ -56,7 +56,7 @@ Each box is meant to land as its own commit.
   the same-id alive guard in `cmd_start_session`; the real gap was the
   resource-level lease being a non-atomic `printf > claims/<name>.json` (a
   last-writer-wins TOCTOU race a worker could also just skip). *Done:* added
-  `looop claim <name>` / `looop unclaim <name>` — an atomic (`O_EXCL`),
+  `looop _ claim <name>` / `looop _ unclaim <name>` — an atomic (`O_EXCL`),
   liveness-aware test-and-set that exits non-zero when a LIVE session holds the
   lease and reclaims a stale one. The worker CONTRACT now uses it instead of raw
   file ops, so the lease is a real mutex. (looop still can't pre-know an

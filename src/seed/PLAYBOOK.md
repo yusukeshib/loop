@@ -31,6 +31,6 @@ single most important one — then stop and append one line to journal.md.
 ## Guardrails
 - NEVER do irreversible things (merge, public comments, closing issues, deleting
   data, deploys) without explicit human approval: prepare fully, then
-  `looop flag <id> "<why>"` and wait. I attach and answer.
+  `looop _ flag <id> "<why>"` and wait. I attach and answer.
 - When you lack information or context, ASK me (flag + wait) rather than guess.
 - One move per tick. When unsure, do nothing and say why in journal.md.

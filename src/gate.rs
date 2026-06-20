@@ -2,7 +2,7 @@
 //! whose session is no longer alive (crash-safety), so the AI never has to
 //! clean up a corpse's lease.
 //!
-//! Claims are also the loop's mutual-exclusion primitive. `looop claim <name>`
+//! Claims are also the loop's mutual-exclusion primitive. `looop _ claim <name>`
 //! is an ATOMIC, liveness-aware test-and-set: it creates `claims/<name>.json`
 //! with O_EXCL and FAILS if a LIVE session already holds it, so two workers
 //! racing for the same resource (e.g. a repo) can't both "win" the way the old
@@ -58,7 +58,7 @@ fn claim_positional(args: &[String]) -> String {
     String::new()
 }
 
-/// `looop claim <name> [--session <id>]` — atomically acquire the lease for
+/// `looop _ claim <name> [--session <id>]` — atomically acquire the lease for
 /// `<name>`. Exit 0 if we now hold it (or already held it), exit 1 if a LIVE
 /// session holds it. The acquire is O_EXCL so two racers can't both win; a lease
 /// held by a DEAD session is reclaimed. The claim body is `{session,name}`,
@@ -108,7 +108,7 @@ pub fn cmd_claim(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     bail!("claim {name}: contention reclaiming a stale lease");
 }
 
-/// `looop unclaim <name> [--session <id>]` — release a lease we own. Removes
+/// `looop _ unclaim <name> [--session <id>]` — release a lease we own. Removes
 /// `claims/<name>.json` when it is unowned, owned by us, or held by a DEAD
 /// session; refuses (exit 1) only when a DIFFERENT live session holds it.
 pub fn cmd_unclaim(paths: &Paths, args: &[String]) -> Result<ExitCode> {

@@ -22,22 +22,22 @@ const CONTRACT: &str = r#"# ⚑ WORKER CONTRACT (auto-injected — must obey)
   an agent; only the pulse notifies.
 - When you need a human decision / info / approval, do NOT guess — use ONLY this
   and then wait right there:
-    "$LOOOP_BIN" flag __ID__ "<what you are waiting for / what you need to ask>"
+    "$LOOOP_BIN" _ flag __ID__ "<what you are waiting for / what you need to ask>"
   Once flagged, the pulse relays your note to the human, who attaches over tmux
   to answer (their reply flows into your stdin).
 - When the wait is resolved (you got your answer), unflag before continuing:
-    "$LOOOP_BIN" unflag __ID__
+    "$LOOOP_BIN" _ unflag __ID__
 - When the task is 100% complete and nothing is flagged, end your own session:
-    "$LOOOP_BIN" kill __ID__
+    "$LOOOP_BIN" _ kill __ID__
   (this lets the pulse prune the corpse). NEVER do this mid-task or while waiting
   on a human.
 - LEASE (ONLY if the PLAYBOOK/goal tells you to claim this task) — announce
   ownership BEFORE any work so a tick or sibling can't duplicate/race you:
-    "$LOOOP_BIN" claim <name>     # atomic test-and-set; <name> defined by the goal (e.g. one per repo)
+    "$LOOOP_BIN" _ claim <name>   # atomic test-and-set; <name> defined by the goal (e.g. one per repo)
   This EXITS NON-ZERO if a live session already holds <name> — if so, do NOT
   proceed: flag the human or pick other work, never race the holder. Release it
   the instant the task is fully done, right before the kill above:
-    "$LOOOP_BIN" unclaim <name>
+    "$LOOOP_BIN" _ unclaim <name>
   If you crash the pulse auto-reaps your claim; on a clean finish YOU release it.
   NEVER sit/sleep/poll while holding a claim — act and move on.
 - SINGLE-WRITER DATA DIR: the pulse (the tick AI) is the SOLE writer of the
@@ -48,7 +48,7 @@ const CONTRACT: &str = r#"# ⚑ WORKER CONTRACT (auto-injected — must obey)
   write the proposal to reports/<id>.md and raise a flag — the human (or the
   next tick) applies it. EXCEPTION: if your task is explicitly a meta task (e.g.
   setup or playbook grooming), you MAY edit those files, but you MUST show the
-  diff and `"$LOOOP_BIN" flag` for human approval BEFORE writing. When unsure whether
+  diff and `"$LOOOP_BIN" _ flag` for human approval BEFORE writing. When unsure whether
   your task is meta, treat the data dir as read-only and propose via reports/.
 - WORKSPACE: you start in the loop data dir (read-only context for you, save the
   meta exception above). If your task touches a code repo, provision your OWN
@@ -56,7 +56,7 @@ const CONTRACT: &str = r#"# ⚑ WORKER CONTRACT (auto-injected — must obey)
     • if `box` is available:  box new __SESSION__ --repo <repo> && cd "$(box switch __SESSION__)"
     • otherwise (git):         git -C <local-clone> worktree add /tmp/__SESSION__ -b looop/__SESSION__ && cd /tmp/__SESSION__
   (the PLAYBOOK names the repos and which to prefer.)
-- COST: when you end your session (right before `looop kill`), record this
+- COST: when you end your session (right before `looop _ kill`), record this
   session's total LLM spend so the human can see it in `looop cost`. If you can
   determine your own USD cost for this run, log it:
     "$LOOOP_BIN" _ cost session __ID__ __RUNNER__ <usd>
@@ -161,7 +161,7 @@ fn full_session(id: &str) -> String {
 }
 
 /// The pulse is the control loop, NOT a worker: refuse worker-management verbs
-/// aimed at it so a stray `looop kill pulse` / `attach pulse` can't decapitate
+/// aimed at it so a stray `looop _ kill pulse` / `attach pulse` can't decapitate
 /// or hijack the loop. Observe it with `looop watch`/`log`; control it with
 /// a bare `looop`. Returns true (and prints guidance) when `session` is the
 /// reserved pulse id — the caller should then bail with a non-zero code.
@@ -192,10 +192,11 @@ pub fn cmd_attach(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::from(code.clamp(0, 255) as u8))
 }
 
-/// `looop kill <id>` — terminate a worker session (in-process).
+/// `looop _ kill <id>` — terminate a worker session (in-process). Internal
+/// worker self-control callback (CONTRACT), not a human-facing verb.
 pub fn cmd_kill(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     let Some(id) = args.first() else {
-        eprintln!("usage: looop kill <id>");
+        eprintln!("usage: looop _ kill <id>");
         return Ok(ExitCode::from(1));
     };
     let session = full_session(id);
@@ -206,10 +207,11 @@ pub fn cmd_kill(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `looop flag <id> [message]` — raise a worker's attention flag (in-process).
+/// `looop _ flag <id> [message]` — raise a worker's attention flag (in-process).
+/// Internal worker self-control callback (CONTRACT), not a human-facing verb.
 pub fn cmd_flag(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     let Some(id) = args.first() else {
-        eprintln!("usage: looop flag <id> [message]");
+        eprintln!("usage: looop _ flag <id> [message]");
         return Ok(ExitCode::from(1));
     };
     let message = if args.len() > 1 {
@@ -225,10 +227,11 @@ pub fn cmd_flag(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `looop unflag <id>` — clear a worker's attention flag (in-process).
+/// `looop _ unflag <id>` — clear a worker's attention flag (in-process).
+/// Internal worker self-control callback (CONTRACT), not a human-facing verb.
 pub fn cmd_unflag(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     let Some(id) = args.first() else {
-        eprintln!("usage: looop unflag <id>");
+        eprintln!("usage: looop _ unflag <id>");
         return Ok(ExitCode::from(1));
     };
     let session = full_session(id);
@@ -659,7 +662,7 @@ pub fn status_exists(paths: &Paths, session: &str) -> bool {
     list(paths).iter().any(|s| s.id == session)
 }
 
-/// `looop kill <id>` — terminate a session.
+/// `looop _ kill <id>` — terminate a session.
 pub fn kill(paths: &Paths, session: &str) -> anyhow::Result<()> {
     rt().block_on(paths.sessions().kill(Some(session.to_string()), false))
 }
@@ -670,7 +673,7 @@ pub fn kill_quiet(paths: &Paths, session: &str) -> anyhow::Result<()> {
     suppress_stdout(|| kill(paths, session))
 }
 
-/// `looop flag <id> [msg]` — raise a session's attention flag.
+/// `looop _ flag <id> [msg]` — raise a session's attention flag.
 pub fn flag(paths: &Paths, session: &str, message: Option<String>) -> anyhow::Result<()> {
     rt().block_on(
         paths
@@ -679,7 +682,7 @@ pub fn flag(paths: &Paths, session: &str, message: Option<String>) -> anyhow::Re
     )
 }
 
-/// `looop unflag <id>` — clear a session's attention flag.
+/// `looop _ unflag <id>` — clear a session's attention flag.
 pub fn unflag(paths: &Paths, session: &str) -> anyhow::Result<()> {
     rt().block_on(paths.sessions().unflag(Some(session.to_string()), false))
 }
