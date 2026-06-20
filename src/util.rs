@@ -41,7 +41,7 @@ pub fn init_color() {
         }
     };
     let _ = COLOR.set(enabled);
-    // Export so children (`looop _ fmt`, sensors, workers) inherit the decision.
+    // Export so children (the tick runner, sensors, workers) inherit the decision.
     unsafe { std::env::set_var("LOOOP_COLOR", if enabled { "1" } else { "0" }) };
 }
 
