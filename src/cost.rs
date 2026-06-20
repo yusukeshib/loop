@@ -1,13 +1,13 @@
-//! LLM cost accounting + the progressive output formatter (`looop _fmt`).
+//! LLM cost accounting + the progressive output formatter (`looop _ fmt`).
 //!
 //! Spend reaches the ledger through two seams — INTENTIONALLY two, because the
 //! two AI process models are different, not because the logic is duplicated:
 //!   • tick / goal runs are one-shot, non-interactive, and looop owns their
-//!     stdout, so we pipe them through `_fmt`, which renders progress live AND
+//!     stdout, so we pipe them through `_ fmt`, which renders progress live AND
 //!     meters spend off the same NDJSON stream (see `CostMeter`).
 //!   • worker sessions are long-lived, interactive, and self-supervising — looop
 //!     never pipes their stdout, so the agent self-reports its own total via
-//!     `looop _cost` at end-of-session.
+//!     `looop _ cost` at end-of-session.
 //! Both append one JSON line to the cost ledger; `looop cost` reports over it.
 
 use crate::config::Config;
@@ -18,7 +18,7 @@ use std::io::{BufRead, Write};
 use std::process::ExitCode;
 
 /// Total USD recorded in the ledger for the current LOCAL day. The ledger is the
-/// single source of truth for spend (both tick `_fmt` and worker `_cost` append
+/// single source of truth for spend (both tick `_ fmt` and worker `_ cost` append
 /// to it), so summing it survives pulse restarts (H2 — the daily cap must be
 /// process-independent state on disk, not in-memory loop state).
 pub fn spent_today(paths: &Paths) -> f64 {
@@ -74,7 +74,7 @@ pub fn record_cost(paths: &Paths, kind: &str, id: &str, runner: &str, cost: &str
     }
 }
 
-/// `looop _cost <kind> <id> <runner> <usd>` — a worker self-reporting its spend.
+/// `looop _ cost <kind> <id> <runner> <usd>` — a worker self-reporting its spend.
 pub fn cmd_cost_record(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     let kind = args.first().map(String::as_str).unwrap_or("");
     let id = args.get(1).map(String::as_str).unwrap_or("");
@@ -128,7 +128,7 @@ impl CostMeter {
     }
 }
 
-/// `looop _fmt` — read a runner's NDJSON stream on stdin, print friendly progress
+/// `looop _ fmt` — read a runner's NDJSON stream on stdin, print friendly progress
 /// live, and (when LOOOP_COST_* is set) meter spend into the ledger. The two
 /// responsibilities are kept separate: `format_line` renders, `CostMeter` meters.
 pub fn cmd_fmt(paths: &Paths) -> Result<ExitCode> {

@@ -8,7 +8,7 @@
 //! detacher re-execing looop itself (current_exe) as the headless session
 //! supervisor (`looop run --detached-id <id> -- <cmd>`). That ONE path
 //! supervises both kinds of detached session: a worker (cmd is the agent) and
-//! the pulse (cmd is `looop _pulse`, the reconcile-loop body).
+//! the pulse (cmd is `looop _ pulse`, the reconcile-loop body).
 
 mod config;
 mod cost;
@@ -91,8 +91,19 @@ fn main() -> ExitCode {
         "resize" => deps::require_deps(&paths).and_then(|_| session::cmd_resize(&paths, rest)),
         "restart" => deps::require_deps(&paths).and_then(|_| session::cmd_restart(&paths, rest)),
         "detach" => deps::require_deps(&paths).and_then(|_| session::cmd_detach(&paths, rest)),
-        // Hidden: the headless pulse body babysit wraps under a PTY (a bare `looop`).
-        "_pulse" => deps::require_deps(&paths).and_then(|_| service::cmd_pulse(&paths)),
+        // Hidden internal verbs, grouped under `_`: `looop _ pulse|fmt|cost`.
+        // Not for human use; called by looop itself (detached pulse spawn, the
+        // tick `_ fmt` pipe seam, and workers self-reporting via `_ cost`).
+        "_" => match rest.first().map(String::as_str) {
+            // The headless pulse body babysit wraps under a PTY (a bare `looop`).
+            Some("pulse") => deps::require_deps(&paths).and_then(|_| service::cmd_pulse(&paths)),
+            Some("fmt") => cost::cmd_fmt(&paths),
+            Some("cost") => cost::cmd_cost_record(&paths, &rest[1..]),
+            other => {
+                eprintln!("looop _: unknown internal verb {other:?} (expected: pulse, fmt, cost)");
+                Ok(ExitCode::from(1))
+            }
+        },
         "ls" => deps::require_deps(&paths).and_then(|_| ls_inproc(&paths, rest)),
         "status" => status::cmd_status(&paths, rest),
         "start-session" => {
@@ -121,8 +132,6 @@ fn main() -> ExitCode {
         },
         "journal" => journal::cmd_journal(&paths, rest),
         "cost" => cost::cmd_cost(&paths, rest),
-        "_fmt" => cost::cmd_fmt(&paths),
-        "_cost" => cost::cmd_cost_record(&paths, rest),
         other => {
             eprintln!(
                 "looop: unknown command '{other}' (run `looop` to start the loop; or: watch <id>, ls, status, journal, log, shot, send, key, expect, wait, wait-idle, resize, restart, attach, detach, kill, flag, unflag, prune, help)"

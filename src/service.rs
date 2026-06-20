@@ -6,9 +6,9 @@
 //!
 //!   looop        bring the pulse up (as a session), stream it, and on exit
 //!                (Ctrl-C or the pulse dying) tear it AND its workers down.
-//!   looop _pulse the headless pulse body babysit actually wraps (internal)
+//!   looop _ pulse the headless pulse body babysit actually wraps (internal)
 //!
-//! `_pulse` is just the existing reconcile loop (`run::cmd_run`): under babysit it
+//! `_ pulse` is just the existing reconcile loop (`run::cmd_run`): under babysit it
 //! runs in a PTY, so its colored `util::log` output is captured to the session's
 //! `output.log`. Watch it live with `looop watch pulse`, or check the fleet with
 //! `looop ls`. There is no detached "start and walk away" mode — closing the
@@ -52,13 +52,13 @@ pub fn cmd_serve(paths: &Paths, args: &[String]) -> Result<ExitCode> {
             session::reap(paths, PULSE_SESSION); // reuse the pulse id (targeted)
         }
         // Propagate the output format to the detached pulse: spawn_detached
-        // re-execs this binary as `_pulse`, which inherits our env, and
+        // re-execs this binary as `_ pulse`, which inherits our env, and
         // `util::init_format` there reads LOOOP_LOG_FORMAT to pick NDJSON vs human.
         if json {
             unsafe { std::env::set_var("LOOOP_LOG_FORMAT", "json") };
         }
-        // babysit wraps `<looop-bin> _pulse`; its detacher re-execs looop as the
-        // supervisor, which spawns this command under a PTY. `_pulse` then runs
+        // babysit wraps `<looop-bin> _ pulse`; its detacher re-execs looop as the
+        // supervisor, which spawns this command under a PTY. `_ pulse` then runs
         // the real loop (and takes the single-instance lock inside cmd_run).
         let bin = paths.bin.to_string_lossy().to_string();
         session::spawn_detached(paths, vec![bin, "_pulse".to_string()], PULSE_SESSION)?;
@@ -124,7 +124,7 @@ fn stop_all(paths: &Paths) -> Result<ExitCode> {
     }
 }
 
-/// `looop _pulse` (internal) — the headless pulse body babysit wraps. It is just
+/// `looop _ pulse` (internal) — the headless pulse body babysit wraps. It is just
 /// the reconcile loop (`run::cmd_run`) running under a PTY; a bare `looop` is how
 /// a user starts it.
 pub fn cmd_pulse(paths: &Paths) -> Result<ExitCode> {

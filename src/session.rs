@@ -58,8 +58,8 @@ const CONTRACT: &str = r#"# ⚑ WORKER CONTRACT (auto-injected — must obey)
 - COST: when you end your session (right before `looop kill`), record this
   session's total LLM spend so the human can see it in `looop cost`. If you can
   determine your own USD cost for this run, log it:
-    "$LOOOP_BIN" _cost session __ID__ __RUNNER__ <usd>
-  (e.g. "$LOOOP_BIN" _cost session __ID__ __RUNNER__ 0.42). Skip only if you truly
+    "$LOOOP_BIN" _ cost session __ID__ __RUNNER__ <usd>
+  (e.g. "$LOOOP_BIN" _ cost session __ID__ __RUNNER__ 0.42). Skip only if you truly
   cannot determine the amount.
 - DELIVERABLES: write any report / artifact a human will read into the data dir's
   reports/ folder (e.g. reports/<id>.md). That dir PERSISTS across ticks. NEVER
