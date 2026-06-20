@@ -8,9 +8,9 @@ Each box is meant to land as its own commit.
 
 ## Quick wins (docs / config honesty)
 
-- [ ] **Stale version reference.** `README.md` still says `looop version # -> looop 0.1.0`
+- [x] **Stale version reference.** `README.md` still says `looop version # -> looop 0.1.0`
   while `Cargo.toml` is at 0.13.0. Don't hard-code a version that drifts.
-- [ ] **Model-allocation comment overgeneralizes.** `config.rs` M4 note claims "the
+- [x] **Model-allocation comment overgeneralizes.** `config.rs` M4 note claims "the
   default tick uses the same strong model as the worker (claude-opus-4-8)". That
   is only literally true for the `pi` runner; the `claude` runner pins no model on
   either `tick` or `interactive` (both inherit the CLI default — equal, which still
@@ -18,7 +18,7 @@ Each box is meant to land as its own commit.
 
 ## Observability
 
-- [ ] **Sensor failures are invisible to the decider.** A user `sensors/*.sh` that
+- [x] **Sensor failures are invisible to the decider.** A user `sensors/*.sh` that
   exits non-zero (or times out, rc 124) leaves whatever partial/empty stdout it
   wrote as the snapshot; stderr goes to a `.err` file that the prompt never reads.
   The decider then reasons over a blank/garbage world and may `noop`. Replace a
@@ -30,7 +30,7 @@ Each box is meant to land as its own commit.
 
 ## Architecture / behavior
 
-- [ ] **Time-driven goals are impossible; a `noop` silences the loop.** A successful
+- [x] **Time-driven goals are impossible; a `noop` silences the loop.** A successful
   decision (incl. `noop`) commits the world hash, so the loop won't call the AI
   again until the world changes externally. The only timer is `today.sh` (daily).
   A goal like "re-check in 5 min" cannot fire: `next_interval_s` only changes the

@@ -124,8 +124,14 @@ pub fn cmd_run(paths: &Paths) -> Result<ExitCode> {
         );
     }
 
+    // When the previous beat emitted a `next_interval_s` nudge, the next beat is
+    // a FORCED re-decide: it bypasses the unchanged-world skip once, so a goal
+    // can schedule a time-based follow-up instead of going silent until the world
+    // changes on its own. Reset every beat; only a fresh override re-arms it.
+    let mut force = false;
     loop {
-        let acted = tick::tick(paths);
+        let acted = tick::tick(paths, force);
+        force = false;
 
         // Pick the base cadence ONCE: a beat that moved is "busy"; otherwise a
         // live worker keeps us "active"; an idle world waits the longest. Both
@@ -157,6 +163,9 @@ pub fn cmd_run(paths: &Paths) -> Result<ExitCode> {
                 );
                 want = req;
                 reason = "override";
+                // The override also forces the next beat to re-decide even if the
+                // world is unchanged (time-based follow-up, not just a sleep nudge).
+                force = true;
             }
         }
         util::event(

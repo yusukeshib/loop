@@ -65,8 +65,19 @@ fn record_backoff(paths: &Paths, hash: &str) -> u32 {
     fails
 }
 
+/// Whether this beat may skip the AI: the world is unchanged since last beat AND
+/// the decider did NOT request a forced re-decide (`force`). `force` is set by
+/// the pulse when the previous beat emitted a `next_interval_s` nudge, so a goal
+/// that needs a time-based follow-up ("re-check in 5 min") can opt out of the
+/// level-triggered skip exactly once instead of going silent until the world
+/// changes on its own.
+fn can_skip(hash: &str, last: &str, force: bool) -> bool {
+    hash == last && !force
+}
+
 /// Run one beat. Returns whether the AI actually acted (drives cadence).
-pub fn tick(paths: &Paths) -> bool {
+/// `force` bypasses the unchanged-world skip once (see [`can_skip`]).
+pub fn tick(paths: &Paths, force: bool) -> bool {
     let _ = seed::ensure_dirs(paths);
     events::emit(paths, "tick_start", serde_json::json!({}));
 
@@ -92,7 +103,7 @@ pub fn tick(paths: &Paths) -> bool {
         .unwrap_or_default()
         .trim()
         .to_string();
-    if hash == last {
+    if can_skip(&hash, &last, force) {
         util::event(
             Level::Info,
             "tick.skip",
@@ -101,6 +112,14 @@ pub fn tick(paths: &Paths) -> bool {
         );
         events::emit(paths, "world_unchanged", serde_json::json!({}));
         return false;
+    }
+    if hash == last && force {
+        util::event(
+            Level::Info,
+            "tick.forced",
+            "world unchanged but re-deciding (cadence override from last beat)",
+            &[],
+        );
     }
 
     // 2b. backoff (H1): if THIS exact world state has been failing, wait out an
@@ -353,6 +372,14 @@ pub fn prune_runs(paths: &Paths) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn can_skip_only_when_unchanged_and_not_forced() {
+        assert!(can_skip("h", "h", false), "unchanged + not forced => skip");
+        assert!(!can_skip("h", "h", true), "forced re-decide overrides skip");
+        assert!(!can_skip("h2", "h", false), "changed world never skips");
+        assert!(!can_skip("h2", "h", true), "changed + forced never skips");
+    }
 
     #[test]
     fn tick_cost_reads_matching_ledger_row() {

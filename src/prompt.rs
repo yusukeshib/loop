@@ -82,6 +82,9 @@ Every action ALSO takes:
   "journal": "<one line: what you did and why>"  — looop appends it, timestamped.
   "next_interval_s": <int>  — OPTIONAL one-shot cadence nudge (clamped 5..3600):
      tighten when a backlog is piling up, widen when it's been quiet a long while.
+     It ALSO forces the next beat to re-decide even if nothing in the world
+     changed — use it for a time-based follow-up ("re-check in N seconds"), since
+     an unchanged world otherwise skips the AI entirely.
 
 Two of the SENSOR READINGS are looop's OWN state (system sensors, not
 sensors/*.sh):
