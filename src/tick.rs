@@ -215,8 +215,15 @@ pub fn tick(paths: &Paths) -> bool {
     // ONLY when a usable decision was produced — a runner crash, a malformed
     // decision, or no decision all count as failures that arm exponential
     // backoff (H1) and leave the hash uncommitted so a transient issue retries.
-    let runner_ok =
-        runner::run_streamed(paths, &tick_cmd, &prompt_file, "tick", &cost_id, &runner_name, &tee);
+    let runner_ok = runner::run_streamed(
+        paths,
+        &tick_cmd,
+        &prompt_file,
+        "tick",
+        &cost_id,
+        &runner_name,
+        &tee,
+    );
     let secs = t0.elapsed().as_secs();
     let outcome = if runner_ok {
         executor::consume_decision(paths)

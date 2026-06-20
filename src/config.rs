@@ -108,7 +108,10 @@ impl Config {
 /// user pipeline is left untouched.
 fn strip_fmt_seam(cmd: &str) -> String {
     if let Some(idx) = cmd.rfind('|') {
-        let tail: String = cmd[idx + 1..].split_whitespace().collect::<Vec<_>>().join(" ");
+        let tail: String = cmd[idx + 1..]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         let is_fmt = (tail.ends_with("_ fmt") || tail.ends_with("_fmt"))
             && (tail.contains("LOOOP_BIN") || tail.contains("looop"));
         if is_fmt {

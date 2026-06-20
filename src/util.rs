@@ -5,7 +5,6 @@
 //! system `date` (parity with the bash version's TZ handling); everything else
 //! uses chrono for speed.
 
-use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
@@ -226,38 +225,26 @@ pub fn date_fmt(fmt: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Portable content hash for `world_hash`: prefer `shasum`, then `sha1sum`,
-/// then POSIX `cksum`. Feeds `input` on stdin and returns the first field of
-/// the tool's output — byte-for-byte parity with the bash `_hash`.
+/// Content hash for `world_hash` — deterministic FNV-1a (128-bit), computed
+/// in-process. The bash version shelled out to `shasum`/`sha1sum`/`cksum`; the
+/// port carried that over, which (a) made hashing an UNDECLARED dependency and
+/// (b) silently returned an empty string when none of those tools was on $PATH,
+/// which collapses `world_hash` to a constant so the pulse never wakes. A native
+/// hash removes the subprocess, the hidden dependency, and that silent-stall
+/// failure mode. Only requirement: stable across runs (it is — fixed constants),
+/// so `.last-tick-hash` stays comparable beat to beat. The exact digest differs
+/// from the old shell tools, so the first beat after upgrading sees one
+/// (harmless) "world changed".
 pub fn content_hash(input: &[u8]) -> String {
-    let tool = if on_path("shasum") {
-        "shasum"
-    } else if on_path("sha1sum") {
-        "sha1sum"
-    } else {
-        "cksum"
-    };
-    let mut child = match Command::new(tool)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => return String::new(),
-    };
-    if let Some(mut si) = child.stdin.take() {
-        let _ = si.write_all(input);
+    // FNV-1a, 128-bit (offset basis + prime per the FNV spec).
+    const OFFSET: u128 = 0x6c62272e07bb014262b821756295c58d;
+    const PRIME: u128 = 0x0000000001000000000000000000013b;
+    let mut h = OFFSET;
+    for &b in input {
+        h ^= b as u128;
+        h = h.wrapping_mul(PRIME);
     }
-    let out = match child.wait_with_output() {
-        Ok(o) => o,
-        Err(_) => return String::new(),
-    };
-    String::from_utf8_lossy(&out.stdout)
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_string()
+    format!("{h:032x}")
 }
 
 /// `command -v <cmd>` — true if found and executable on $PATH.
@@ -339,5 +326,17 @@ mod tests {
         assert_eq!(Level::Ok.glyph(), "✓");
         assert_eq!(Level::Warn.glyph(), "⚡");
         assert_eq!(Level::Error.glyph(), "✗");
+    }
+
+    #[test]
+    fn content_hash_is_deterministic_and_change_sensitive() {
+        // Stable across calls (so `.last-tick-hash` stays comparable).
+        assert_eq!(content_hash(b"hello world"), content_hash(b"hello world"));
+        // Distinct inputs hash differently.
+        assert_ne!(content_hash(b"hello world"), content_hash(b"hello worle"));
+        // 128-bit digest is rendered as 32 lowercase hex chars, never empty.
+        let h = content_hash(b"");
+        assert_eq!(h.len(), 32);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }
