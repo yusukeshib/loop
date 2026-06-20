@@ -24,6 +24,7 @@ runs/
 claims/
 reports/
 .lock/
+.decision.json
 .last-tick-hash
 .tick-backoff
 .cost-unmetered
