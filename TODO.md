@@ -45,10 +45,11 @@ Each box is meant to land as its own commit.
   move" means a perpetually-changing high-priority goal starves the rest. K8s
   reconciles every object; looop reconciles one. Needs an aging/round-robin notion
   before it's safe to "fix" — left as a documented limitation for now.
-- [ ] **Budget breaker fails open for non-pi/claude runners.** Cost metering is
+- [x] **Budget breaker fails open for non-pi/claude runners.** Cost metering is
   hard-wired to pi/claude NDJSON shapes; a custom runner produces no metered cost,
-  so `max_daily_usd` silently never trips. At minimum, warn when a budget is set
-  but no cost is ever recorded.
+  so `max_daily_usd` silently never trips. *Done (partial):* the pulse now warns
+  once per process when a budget is set but a run records no cost row. A full fix
+  (generic metering or refusing an unmeterable runner under a budget) is still open.
 - [ ] **Claims are advisory only.** `start_worker` doesn't check `claims/`, and a
   worker writes its lease voluntarily; nothing enforces one-worker-per-goal. The
   "lease" (K8s analogy) has no real mutual exclusion.

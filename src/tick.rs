@@ -250,6 +250,29 @@ pub fn tick(paths: &Paths, force: bool) -> bool {
         None
     };
 
+    // Fail-open guard: the budget breaker (H2) can only enforce a cap if runs are
+    // metered, and metering is wired to the pi/claude NDJSON shapes. A custom
+    // runner produces no cost row, so `max_daily_usd` would silently never trip.
+    // If a budget is set but this run recorded nothing, warn once per process so
+    // the operator learns the breaker is inert here — not on the bill.
+    if runner_ok
+        && crate::cost::daily_budget(&cfg).is_some()
+        && tick_cost(paths, &cost_id).is_none()
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static WARNED: AtomicBool = AtomicBool::new(false);
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            util::event(
+                Level::Warn,
+                "tick.unmetered",
+                &format!(
+                    "max_daily_usd is set but runner '{runner_name}' produced no cost row — the budget breaker cannot enforce a cap for this runner"
+                ),
+                &[("runner", serde_json::json!(runner_name))],
+            );
+        }
+    }
+
     // A beat SUCCEEDS only when a usable decision was produced: commit the world
     // hash, clear backoff, journal the move. Every other outcome (bad decision /
     // no decision / runner crash) is a failure that arms exponential backoff
