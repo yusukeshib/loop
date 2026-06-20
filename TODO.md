@@ -62,12 +62,16 @@ Each box is meant to land as its own commit.
   file ops, so the lease is a real mutex. (looop still can't pre-know an
   arbitrary worker-chosen resource name, so enforcement is at the claim primitive,
   not at spawn — which is the right layer.)
-- [ ] **`current_exe` re-exec fragility.** The detached supervisor re-execs the
-  running binary; an upgrade / `nix gc` / move during a long-lived pulse can leave
-  `current_exe` pointing at a stale or deleted inode. *Note:* the re-exec lives in
-  the babysit library (`bs.run` re-execs `current_exe()`), not in looop — looop
-  only receives it via `run_detached_worker`. A real fix is an upstream babysit
-  change (accept an explicit supervisor path); not a looop-side quick win.
+- [x] **`current_exe` re-exec fragility.** The detached supervisor re-execs the
+  running binary; an upgrade / `nix gc` / move during a long-lived pulse could
+  leave `current_exe` pointing at a stale or deleted inode. Fixed upstream in
+  babysit 0.12.0 (yusukeshib/babysit#30): the supervisor re-exec prefers
+  `/proc/self/exe` on Linux (the kernel keeps it valid even after the binary is
+  replaced/unlinked) and exposes `Babysit::with_supervisor_exe` for an embedder
+  to pin a stable path. looop consumes it by bumping the dependency; on Linux the
+  pulse now survives its own binary being upgraded mid-run. (macOS has no
+  `/proc/self/exe` equivalent, so it keeps `current_exe()` — an inherent OS limit,
+  mitigated in practice by nix GC rooting live processes' executables.)
 - [x] **Single-instance lock liveness.** Replaced the mkdir-lock + PID-liveness
   check with a `flock(2)` on `<data>/.lock/lock`: the kernel releases it when the
   pulse dies for any reason, so there is no stale lock to reclaim and no PID-reuse
