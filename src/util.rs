@@ -222,6 +222,14 @@ pub fn date_fmt(fmt: &str) -> String {
     chrono::Local::now().format(fmt).to_string()
 }
 
+/// Wall-clock seconds since the Unix epoch (0 if the clock is before it).
+pub fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Content hash for `world_hash` — deterministic FNV-1a (128-bit), computed
 /// in-process. The bash version shelled out to `shasum`/`sha1sum`/`cksum`; the
 /// port carried that over, which (a) made hashing an UNDECLARED dependency and

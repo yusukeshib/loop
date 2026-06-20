@@ -86,7 +86,7 @@ Every action ALSO takes:
      changed — use it for a time-based follow-up ("re-check in N seconds"), since
      an unchanged world otherwise skips the AI entirely.
 
-Two of the SENSOR READINGS are looop's OWN state (system sensors, not
+Three of the SENSOR READINGS are looop's OWN state (system sensors, not
 sensors/*.sh):
   • sys-sessions — the live worker fleet. An entry with a `note` means that worker
     raised a ⚑flag and is WAITING for the human: relay it via send_notification;
@@ -94,6 +94,12 @@ sensors/*.sh):
     spawning a SECOND one for the same goal.
   • sys-claims — live worker leases. A name listed here is OWNED by the worker
     reconciling it; do NOT act on it yourself.
+  • sys-goals — per-goal staleness (.detail.goals[id].age_s = seconds since you
+    last acted on that goal; null = never). FAIRNESS: you pick ONE move per beat,
+    so a constantly-changing goal can starve the rest. When several goals are
+    ready and roughly comparable, prefer the one you've neglected longest rather
+    than always serving the loudest. (Workers run in parallel, so dispatching a
+    neglected goal doesn't block the others.)
 Current local time: __NOW__.
 
 Write your single JSON object to `.decision.json` now, then stop.

@@ -41,10 +41,16 @@ Each box is meant to land as its own commit.
 
 ## Deferred — needs design, not a quick patch
 
-- [ ] **No fairness across goals (starvation).** One move per tick + "most important
-  move" means a perpetually-changing high-priority goal starves the rest. K8s
-  reconciles every object; looop reconciles one. Needs an aging/round-robin notion
-  before it's safe to "fix" — left as a documented limitation for now.
+- [x] **No fairness across goals (starvation).** One move per tick + "most
+  important move" means a perpetually-changing high-priority goal can starve the
+  rest. *Done (visibility, not a hard scheduler):* a `sys-goals` system sensor now
+  surfaces per-goal staleness (`.detail.goals[id].age_s`), stamped by the executor
+  whenever a move targets a goal. The prompt tells the decider to prefer the
+  longest-neglected of comparable ready goals. Ages live in `.detail` only, so
+  they never wake the loop. This keeps RULE 1 (one move/tick) and "the AI judges
+  importance" intact — it just gives the AI the data to avoid starving a goal
+  (note: workers run in parallel, so dispatching a neglected goal doesn't block
+  the others).
 - [x] **Budget breaker fails open for non-pi/claude runners.** Cost metering was
   hard-wired to pi/claude NDJSON shapes; a custom runner produced no metered cost,
   so `max_daily_usd` silently never tripped. *Done:* (1) a custom runner declares

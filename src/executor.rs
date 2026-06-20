@@ -141,6 +141,36 @@ pub fn kind(action: &Action) -> &'static str {
     }
 }
 
+/// The goal id an action targets, if any — used to stamp the per-goal activity
+/// ledger that drives the `sys-goals` staleness reading (so the decider can see
+/// which goals it's been neglecting and avoid starving them). Actions with no
+/// goal association (noop, run_shell, write_sensor, write_playbook, notify)
+/// return None.
+fn goal_of(action: &Action) -> Option<String> {
+    match action {
+        Action::WriteGoal { id, .. } => Some(id.clone()),
+        Action::ArchiveGoal { id } => Some(id.clone()),
+        Action::StartWorker { id, .. } => Some(id.clone()),
+        Action::SteerSession { id, .. }
+        | Action::SendKey { id, .. }
+        | Action::RestartSession { id } => worker_target(id).ok(),
+        _ => None,
+    }
+}
+
+/// Stamp `id` as acted-on "now" in the goal-activity ledger (goal id -> unix
+/// secs). Best-effort: a write failure just means the staleness reading is a
+/// beat stale.
+fn record_goal_activity(paths: &Paths, id: &str) {
+    let path = paths.goal_activity();
+    let mut map: serde_json::Map<String, serde_json::Value> = fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    map.insert(id.to_string(), serde_json::json!(crate::util::now_unix()));
+    let _ = fs::write(&path, serde_json::Value::Object(map).to_string());
+}
+
 fn with_trailing_newline(body: &str) -> String {
     if body.ends_with('\n') {
         body.to_string()
@@ -290,6 +320,12 @@ pub fn consume_decision(paths: &Paths) -> Option<Result<Decided>> {
     Some((|| {
         let decision = Decision::parse(&raw)?;
         let summary = execute(paths, &decision.action)?;
+        // Stamp per-goal activity so sys-goals can surface staleness (fairness:
+        // the decider sees which goals it's neglected and can avoid starving
+        // them) — only after a successful execute, so a failed move isn't counted.
+        if let Some(id) = goal_of(&decision.action) {
+            record_goal_activity(paths, &id);
+        }
         let journal = if decision.journal.trim().is_empty() {
             summary.clone()
         } else {
@@ -514,5 +550,56 @@ mod tests {
     fn consume_decision_absent_is_none() {
         let p = Paths::temp();
         assert!(consume_decision(&p).is_none());
+    }
+
+    #[test]
+    fn goal_of_maps_only_goal_targeting_actions() {
+        assert_eq!(
+            goal_of(&Action::StartWorker {
+                id: "triage".into(),
+                prompt: "p".into()
+            }),
+            Some("triage".into())
+        );
+        assert_eq!(
+            goal_of(&Action::WriteGoal {
+                id: "ship".into(),
+                body: "b".into()
+            }),
+            Some("ship".into())
+        );
+        // A `looop-`-prefixed steer target normalizes to the bare goal id.
+        assert_eq!(
+            goal_of(&Action::SteerSession {
+                id: "looop-triage".into(),
+                input: "y".into()
+            }),
+            Some("triage".into())
+        );
+        // Non-goal actions contribute no activity.
+        assert_eq!(goal_of(&Action::Noop { reason: "".into() }), None);
+        assert_eq!(
+            goal_of(&Action::SendNotification {
+                message: "x".into()
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn consume_decision_stamps_goal_activity() {
+        let p = Paths::temp();
+        fs::write(
+            p.data_dir.join(DECISION_FILE),
+            r#"{"action":"write_goal","id":"triage","body":"do it","journal":"made triage"}"#,
+        )
+        .unwrap();
+        consume_decision(&p).expect("decision present").unwrap();
+        let act: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(p.goal_activity()).unwrap()).unwrap();
+        assert!(
+            act.get("triage").and_then(|v| v.as_u64()).is_some(),
+            "acting on a goal stamps its activity time"
+        );
     }
 }
