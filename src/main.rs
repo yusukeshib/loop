@@ -100,8 +100,31 @@ fn main() -> ExitCode {
             // The headless pulse body babysit wraps under a PTY (a bare `looop`).
             Some("pulse") => deps::require_deps(&paths).and_then(|_| service::cmd_pulse(&paths)),
             Some("cost") => cost::cmd_cost_record(&paths, &rest[1..]),
+            // Worker self-control callbacks, invoked by the auto-injected CONTRACT
+            // — NOT by a human. Grouped under `_` (like `_ cost`) so a person can't
+            // imperatively flag/kill/lease a worker out from under the loop; humans
+            // steer by editing goals/PLAYBOOK and attaching, never by these verbs.
+            Some("flag") => {
+                deps::require_deps(&paths).and_then(|_| session::cmd_flag(&paths, &rest[1..]))
+            }
+            Some("unflag") => {
+                deps::require_deps(&paths).and_then(|_| session::cmd_unflag(&paths, &rest[1..]))
+            }
+            Some("kill") => {
+                deps::require_deps(&paths).and_then(|_| session::cmd_kill(&paths, &rest[1..]))
+            }
+            // Atomic, liveness-aware lease test-and-set so two workers can't race
+            // the same resource.
+            Some("claim") => {
+                deps::require_deps(&paths).and_then(|_| gate::cmd_claim(&paths, &rest[1..]))
+            }
+            Some("unclaim") => {
+                deps::require_deps(&paths).and_then(|_| gate::cmd_unclaim(&paths, &rest[1..]))
+            }
             other => {
-                eprintln!("looop _: unknown internal verb {other:?} (expected: pulse, cost)");
+                eprintln!(
+                    "looop _: unknown internal verb {other:?} (expected: pulse, cost, flag, unflag, kill, claim, unclaim)"
+                );
                 Ok(ExitCode::from(1))
             }
         },
@@ -111,9 +134,6 @@ fn main() -> ExitCode {
             deps::require_deps(&paths).and_then(|_| session::cmd_start_session(&paths, rest))
         }
         "attach" => deps::require_deps(&paths).and_then(|_| session::cmd_attach(&paths, rest)),
-        "kill" => deps::require_deps(&paths).and_then(|_| session::cmd_kill(&paths, rest)),
-        "flag" => deps::require_deps(&paths).and_then(|_| session::cmd_flag(&paths, rest)),
-        "unflag" => deps::require_deps(&paths).and_then(|_| session::cmd_unflag(&paths, rest)),
         "prune" => deps::require_deps(&paths).and_then(|_| session::cmd_prune(&paths, rest)),
         "config" => match rest.first().map(String::as_str) {
             Some("zsh") => {
@@ -135,7 +155,7 @@ fn main() -> ExitCode {
         "cost" => cost::cmd_cost(&paths, rest),
         other => {
             eprintln!(
-                "looop: unknown command '{other}' (run `looop` to start the loop; or: watch <id>, ls, status, journal, log, shot, send, key, expect, wait, wait-idle, resize, restart, attach, detach, kill, flag, unflag, prune, help)"
+                "looop: unknown command '{other}' (run `looop` to start the loop; or: watch <id>, ls, status, journal, log, shot, send, key, expect, wait, wait-idle, resize, restart, attach, detach, prune, help)"
             );
             Ok(ExitCode::from(1))
         }

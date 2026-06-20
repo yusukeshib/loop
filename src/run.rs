@@ -49,10 +49,44 @@ fn interval(env: &str, cfg: &Config, key: &str, fallback: u64) -> u64 {
         .unwrap_or(fallback)
 }
 
-/// Removes the lock dir on drop (covers normal exit / panics; a hard Ctrl-C
-/// relies on the stale-lock reclaim in the next start, which checks pid liveness).
+/// A non-blocking exclusive `flock(2)` on an open fd. `true` = we hold it now.
+/// flock is the right primitive for single-instance: the kernel releases it when
+/// the holding process dies for ANY reason (normal exit, panic, `kill -9`, crash),
+/// so there is no stale lock to reclaim and no PID-liveness guessing that a reused
+/// PID can fool. (macOS DOES have flock(2), despite the old comment here.)
+#[cfg(unix)]
+fn try_flock(f: &std::fs::File) -> bool {
+    use std::os::unix::io::AsRawFd;
+    const LOCK_EX: i32 = 2;
+    const LOCK_NB: i32 = 4;
+    unsafe extern "C" {
+        fn flock(fd: i32, op: i32) -> i32;
+    }
+    unsafe { flock(f.as_raw_fd(), LOCK_EX | LOCK_NB) == 0 }
+}
+#[cfg(not(unix))]
+fn try_flock(_f: &std::fs::File) -> bool {
+    true // best-effort: single-instance enforcement is unix-only
+}
+
+/// Whether a live pulse currently holds the single-instance lock. Used by
+/// `looop status` from a SEPARATE process: open the lock file read-only and try
+/// to take the flock; if we CAN take it, nobody holds it (we release it again on
+/// drop) — so the pulse is NOT running. A crashed pulse that left the lock file
+/// behind therefore reads as "not running", with no PID-reuse false positive.
+pub(crate) fn pulse_running(paths: &Paths) -> bool {
+    let Ok(f) = std::fs::File::open(paths.lock().join("lock")) else {
+        return false; // never started, or already cleaned up
+    };
+    !try_flock(&f)
+}
+
+/// Holds the lock file open for the pulse's lifetime; the flock is released by the
+/// kernel when `_file` is dropped (or the process dies). The lock DIR is removed
+/// on a clean exit for tidiness, but correctness no longer depends on that.
 struct LockGuard {
     path: PathBuf,
+    _file: std::fs::File,
 }
 impl Drop for LockGuard {
     fn drop(&mut self) {
@@ -60,27 +94,29 @@ impl Drop for LockGuard {
     }
 }
 
-/// Acquire the single-instance lock (atomic mkdir + PID file). Returns the guard
-/// (released on drop) on success, or `None` if a LIVE pulse already holds it. A
-/// stale lock left by a dead process is reclaimed (mkdir is the atomic arbiter of
-/// the reclaim race), so a crashed pulse never wedges the next start. The pulse
-/// is the sole beat runner, so holding this for its lifetime guarantees no two
-/// beats ever wipe/regenerate the shared snapshots/ dir under each other (H4).
+/// Acquire the single-instance lock via `flock(2)` on `<data>/.lock/lock`.
+/// Returns the guard (lock held for its lifetime) on success, or `None` if a LIVE
+/// pulse already holds it. The pulse is the sole beat runner, so holding this for
+/// its lifetime guarantees no two beats ever wipe/regenerate the shared
+/// snapshots/ dir under each other (H4). A pid file is written alongside purely
+/// for human-facing messages (`looop status`, the "already running" notice).
 fn acquire_lock(paths: &Paths) -> Option<LockGuard> {
-    let lock = paths.lock();
-    if fs::create_dir(&lock).is_err() {
-        let oldpid = fs::read_to_string(lock.join("pid")).unwrap_or_default();
-        if util::pid_alive(oldpid.trim()) {
-            return None;
-        }
-        // Stale lock: reclaim it (mkdir is the atomic arbiter on the race).
-        let _ = fs::remove_dir_all(&lock);
-        if fs::create_dir(&lock).is_err() {
-            return None;
-        }
+    let dir = paths.lock();
+    let _ = fs::create_dir_all(&dir);
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("lock"))
+        .ok()?;
+    if !try_flock(&file) {
+        return None; // a live pulse holds the flock (kernel-managed, no PID guess)
     }
-    let _ = fs::write(lock.join("pid"), format!("{}\n", std::process::id()));
-    Some(LockGuard { path: lock })
+    let _ = fs::write(dir.join("pid"), format!("{}\n", std::process::id()));
+    Some(LockGuard {
+        path: dir,
+        _file: file,
+    })
 }
 
 pub fn cmd_run(paths: &Paths) -> Result<ExitCode> {
@@ -124,8 +160,14 @@ pub fn cmd_run(paths: &Paths) -> Result<ExitCode> {
         );
     }
 
+    // When the previous beat emitted a `next_interval_s` nudge, the next beat is
+    // a FORCED re-decide: it bypasses the unchanged-world skip once, so a goal
+    // can schedule a time-based follow-up instead of going silent until the world
+    // changes on its own. Reset every beat; only a fresh override re-arms it.
+    let mut force = false;
     loop {
-        let acted = tick::tick(paths);
+        let acted = tick::tick(paths, force);
+        force = false;
 
         // Pick the base cadence ONCE: a beat that moved is "busy"; otherwise a
         // live worker keeps us "active"; an idle world waits the longest. Both
@@ -157,6 +199,9 @@ pub fn cmd_run(paths: &Paths) -> Result<ExitCode> {
                 );
                 want = req;
                 reason = "override";
+                // The override also forces the next beat to re-decide even if the
+                // world is unchanged (time-based follow-up, not just a sleep nudge).
+                force = true;
             }
         }
         util::event(
@@ -169,5 +214,54 @@ pub fn cmd_run(paths: &Paths) -> Result<ExitCode> {
             ],
         );
         std::thread::sleep(Duration::from_secs(want));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lock_is_exclusive_and_self_heals_after_release() {
+        let p = Paths::temp();
+        // Nobody holds it yet.
+        assert!(!pulse_running(&p), "no pulse before any acquire");
+
+        let g = acquire_lock(&p).expect("first acquire succeeds");
+        // A second acquire (separate fd, even same process) is denied by flock.
+        assert!(
+            acquire_lock(&p).is_none(),
+            "second acquire blocked while held"
+        );
+        // An outside observer (looop status) sees it as running.
+        assert!(
+            pulse_running(&p),
+            "pulse_running true while the lock is held"
+        );
+
+        // Releasing the guard releases the flock; the next start re-acquires with
+        // no stale-lock reclaim and no PID-liveness guessing.
+        drop(g);
+        assert!(!pulse_running(&p), "not running once released");
+        let g2 = acquire_lock(&p).expect("re-acquire after release");
+        drop(g2);
+    }
+
+    #[test]
+    fn stale_lock_dir_is_not_mistaken_for_a_live_pulse() {
+        let p = Paths::temp();
+        // Simulate a crashed pulse: the lock dir + files exist, but no flock holder.
+        let dir = p.lock();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("lock"), b"").unwrap();
+        std::fs::write(dir.join("pid"), b"999999\n").unwrap();
+
+        assert!(
+            !pulse_running(&p),
+            "a leftover lock dir is not a running pulse"
+        );
+        // And a fresh start reclaims it cleanly.
+        let g = acquire_lock(&p).expect("acquire over a stale lock dir");
+        drop(g);
     }
 }

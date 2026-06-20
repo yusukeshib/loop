@@ -106,12 +106,21 @@ looop wait <id> | wait-idle <id>  block until exit / until output is quiet
 looop resize <id> <COLSxROWS>  resize a session's terminal
 looop attach <id> | detach <id>   attach/force-detach a terminal (Ctrl-\ Ctrl-\)
 looop restart <id>             restart a worker's wrapped command
-looop kill|flag|unflag <id>    manage a worker; looop prune clears finished ones
+looop prune                    clear finished worker corpses now
 looop journal [--tail N]       read the decision log (one line per move; --tail N)
 looop cost [today|all|--json]  report LLM spend from the cost ledger
 looop config zsh|bash          print shell integration (tab completions)
 looop version | help           (looop help = the full design manual)
 ```
+
+The verbs above are the public surface: read-only **observe** (watch, log, shot,
+status, ls, journal, cost) plus **drive** (send, key, expect, wait, resize,
+restart, attach) — usable by a human, a script, or an external agent watching the
+loop from outside. A worker's **self-control** callbacks — `flag` / `unflag` /
+`kill` (end itself) / `claim` / `unclaim` — are internal `looop _ <verb>` verbs
+the auto-injected worker contract invokes about *itself*; a human doesn't reach in
+and run them, they steer by editing goals/PLAYBOOK and attaching to a flagged
+worker.
 
 ## Shell integration
 
@@ -124,7 +133,7 @@ eval "$(looop config bash)"
 ```
 
 This adds tab completion for every subcommand plus dynamic completion for
-`looop attach|kill|flag|unflag <id>` (this profile's live worker sessions).
+`looop attach|restart <id>` (this profile's live worker sessions).
 Completions resolve `LOOOP_DATA_DIR` the same way the binary does, so an isolated
 profile completes its own sessions.
 
@@ -171,7 +180,7 @@ cargo install --git https://github.com/yusukeshib/looop.git --locked looop
 ### Verify
 
 ```sh
-looop version   # -> looop 0.1.0
+looop version   # prints the installed version (e.g. looop 0.13.0)
 looop help
 ```
 

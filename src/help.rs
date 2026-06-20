@@ -52,9 +52,6 @@ Usage:
                                 block until output is quiet for --settle
   looop resize <id> <COLSxROWS>  resize a session's terminal (e.g. 120x40)
   looop restart <id>             restart the wrapped command in a session
-  looop kill <id>                terminate a worker session
-  looop flag <id> [message]      raise a worker's attention flag
-  looop unflag <id>              clear a worker's attention flag
   looop prune                    clear ALL finished worker corpses now (the pulse
                                 auto-reaps only ones older than the retention
                                 window each tick — LOOOP_SESSION_TTL, default 3d)
@@ -81,8 +78,11 @@ by a bare id (the pulse is `pulse`). looop passes that root to the library
 explicitly — it never sets $BABYSIT_DIR and never touches a shared ~/.babysit.
   looop ls                      list worker sessions (⚑ = waiting for you)
   looop ls --watch              watch sessions live, in place
-  looop attach <id>             enter a waiting session and talk to it
-  looop kill <id>               end a session ; looop flag/unflag <id> ; looop prune
+  looop attach <id>             enter a waiting session and talk to it ; looop prune
+
+  (worker self-control verbs — flag/unflag/kill/claim/unclaim — are internal
+  `looop _ <verb>` callbacks the worker CONTRACT invokes, not human commands: a
+  human steers by editing goals/PLAYBOOK and attaching, never by these verbs.)
 
 The pulse launches each worker in the data dir; if a worker needs to touch code
 it provisions its OWN sandbox (box if available, else git worktree), as told by

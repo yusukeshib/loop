@@ -62,9 +62,6 @@ _looop() {
                 'start-session:Start a worker session'
                 'attach:Attach to a waiting worker'
                 'detach:Force-detach any other terminal'
-                'kill:Terminate a worker session'
-                'flag:Raise a worker attention flag'
-                'unflag:Clear a worker attention flag'
                 'prune:Clear finished worker corpses'
                 'cost:Report LLM spend from the cost ledger'
                 'config:Output shell integration (eval "$(looop config zsh)")'
@@ -75,7 +72,7 @@ _looop() {
             ;;
         args)
             case $words[1] in
-                attach|kill|flag|unflag|restart)
+                attach|restart)
                     (( CURRENT == 2 )) && __looop_workers
                     ;;
                 watch|detach)

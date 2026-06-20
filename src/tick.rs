@@ -65,8 +65,19 @@ fn record_backoff(paths: &Paths, hash: &str) -> u32 {
     fails
 }
 
+/// Whether this beat may skip the AI: the world is unchanged since last beat AND
+/// the decider did NOT request a forced re-decide (`force`). `force` is set by
+/// the pulse when the previous beat emitted a `next_interval_s` nudge, so a goal
+/// that needs a time-based follow-up ("re-check in 5 min") can opt out of the
+/// level-triggered skip exactly once instead of going silent until the world
+/// changes on its own.
+fn can_skip(hash: &str, last: &str, force: bool) -> bool {
+    hash == last && !force
+}
+
 /// Run one beat. Returns whether the AI actually acted (drives cadence).
-pub fn tick(paths: &Paths) -> bool {
+/// `force` bypasses the unchanged-world skip once (see [`can_skip`]).
+pub fn tick(paths: &Paths, force: bool) -> bool {
     let _ = seed::ensure_dirs(paths);
     events::emit(paths, "tick_start", serde_json::json!({}));
 
@@ -92,7 +103,7 @@ pub fn tick(paths: &Paths) -> bool {
         .unwrap_or_default()
         .trim()
         .to_string();
-    if hash == last {
+    if can_skip(&hash, &last, force) {
         util::event(
             Level::Info,
             "tick.skip",
@@ -101,6 +112,14 @@ pub fn tick(paths: &Paths) -> bool {
         );
         events::emit(paths, "world_unchanged", serde_json::json!({}));
         return false;
+    }
+    if hash == last && force {
+        util::event(
+            Level::Info,
+            "tick.forced",
+            "world unchanged but re-deciding (cadence override from last beat)",
+            &[],
+        );
     }
 
     // 2b. backoff (H1): if THIS exact world state has been failing, wait out an
@@ -154,6 +173,14 @@ pub fn tick(paths: &Paths) -> bool {
         return false;
     };
 
+    // The runner+spec signature for fail-closed unmetered tracking: a change to
+    // either (switching runners, adding a cost spec) resets the breaker so the
+    // new config gets a fresh attempt.
+    let cost_sig = format!(
+        "{runner_name}|{}",
+        cfg.runner_cost_spec(&runner_name).is_some()
+    );
+
     // 3b. budget circuit breaker (H2): once today's ledger total reaches the
     // configured ceiling, skip the AI entirely so a runaway loop can't bill past
     // the cap. Off by default; clears at local midnight.
@@ -175,6 +202,26 @@ pub fn tick(paths: &Paths) -> bool {
                 paths,
                 "budget_exceeded",
                 serde_json::json!({ "spent_usd": spent, "max_daily_usd": max }),
+            );
+            return false;
+        }
+        // Fail-closed: if a budget is set but this runner keeps producing no cost
+        // (the breaker can't measure it), refuse to spend blindly rather than
+        // fail open. Self-heals when the runner/spec signature changes.
+        if crate::cost::unmetered_blocked(paths, &cost_sig) {
+            util::event(
+                Level::Warn,
+                "tick.budget_unmetered",
+                &format!(
+                    "runner '{runner_name}' produced no cost for {n} consecutive runs and a budget is set — skipping AI (declare a runner `cost` spec, or use pi/claude)",
+                    n = crate::cost::UNMETERED_LIMIT
+                ),
+                &[("runner", serde_json::json!(runner_name))],
+            );
+            events::emit(
+                paths,
+                "budget_unmetered",
+                serde_json::json!({ "runner": runner_name }),
             );
             return false;
         }
@@ -230,6 +277,37 @@ pub fn tick(paths: &Paths) -> bool {
     } else {
         None
     };
+
+    // Fail-closed accounting: the budget breaker (H2) can only enforce a cap if
+    // runs are metered. If a budget is set, track whether THIS run recorded a
+    // cost: a metered run clears the counter; an unmetered one increments it, and
+    // once it reaches the limit the pre-run check above opens the breaker. So a
+    // runner the meter can't read can't run away — it stalls after a bounded
+    // number of unmetered runs instead of billing forever.
+    if runner_ok && crate::cost::daily_budget(&cfg).is_some() {
+        if tick_cost(paths, &cost_id).is_none() {
+            let n = crate::cost::record_unmetered(paths, &cost_sig);
+            let limit = crate::cost::UNMETERED_LIMIT;
+            let tail = if n >= limit {
+                "breaker now open".to_string()
+            } else {
+                format!("{n}/{limit} before the breaker opens")
+            };
+            util::event(
+                Level::Warn,
+                "tick.unmetered",
+                &format!(
+                    "max_daily_usd is set but runner '{runner_name}' produced no cost row ({tail}) — declare a runner `cost` spec, or use pi/claude"
+                ),
+                &[
+                    ("runner", serde_json::json!(runner_name)),
+                    ("count", serde_json::json!(n)),
+                ],
+            );
+        } else {
+            crate::cost::clear_unmetered(paths);
+        }
+    }
 
     // A beat SUCCEEDS only when a usable decision was produced: commit the world
     // hash, clear backoff, journal the move. Every other outcome (bad decision /
@@ -353,6 +431,14 @@ pub fn prune_runs(paths: &Paths) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn can_skip_only_when_unchanged_and_not_forced() {
+        assert!(can_skip("h", "h", false), "unchanged + not forced => skip");
+        assert!(!can_skip("h", "h", true), "forced re-decide overrides skip");
+        assert!(!can_skip("h2", "h", false), "changed world never skips");
+        assert!(!can_skip("h2", "h", true), "changed + forced never skips");
+    }
 
     #[test]
     fn tick_cost_reads_matching_ledger_row() {

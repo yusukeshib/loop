@@ -5,7 +5,7 @@
 
 use crate::config::Config;
 use crate::paths::Paths;
-use crate::{session, util};
+use crate::session;
 use anyhow::Result;
 use std::fs;
 use std::process::ExitCode;
@@ -37,7 +37,9 @@ fn build(paths: &Paths) -> serde_json::Value {
     let lock = paths.lock();
     let pid = fs::read_to_string(lock.join("pid")).unwrap_or_default();
     let pid = pid.trim().to_string();
-    let running = lock.is_dir() && util::pid_alive(&pid);
+    // Authoritative liveness: whether a pulse currently holds the flock (a crashed
+    // pulse that left the lock dir behind reads as not-running, no PID-reuse fool).
+    let running = crate::run::pulse_running(paths);
 
     let idle = Config::load(paths)
         .ok()

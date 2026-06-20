@@ -9,7 +9,7 @@ _looop() {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="watch ls status journal log shot send key expect wait wait-idle resize restart start-session attach detach kill flag unflag prune cost config version help"
+    local subcommands="watch ls status journal log shot send key expect wait wait-idle resize restart start-session attach detach prune cost config version help"
 
     # session ids including the pulse (for read/observe verbs)
     __looop_session_list() {
@@ -33,7 +33,7 @@ _looop() {
     [[ -z "$subcmd" ]] && return
 
     case "$subcmd" in
-        attach|kill|flag|unflag|restart)
+        attach|restart)
             if [[ $cword -eq 2 ]]; then
                 local dir workers="" s name
                 dir=$(__looop_sessions_dir)
