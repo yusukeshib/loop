@@ -195,8 +195,9 @@ pulse.)
 
 ## Config & data
 
-- **Config** — `$XDG_CONFIG_HOME/looop.json` (override `LOOOP_CONFIG`). One file:
-  runner wiring and tick cadence. Default runner is `pi`; `claude` is built in.
+- **Config** — `$LOOOP_DATA_DIR/config.json` (override `LOOOP_CONFIG`). Lives
+  inside the data dir so a profile is fully self-contained. One file: runner
+  wiring and tick cadence. Default runner is `pi`; `claude` is built in.
 - **Data / memory** — `$XDG_STATE_HOME/looop/` (override `LOOOP_DATA_DIR`). A git
   repo holding the PLAYBOOK, goals, journal, and sensors. Worker and pulse
   sessions live under `sessions/` in the same dir, so a profile is fully

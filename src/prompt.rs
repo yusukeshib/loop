@@ -60,10 +60,12 @@ Pick exactly ONE `action` and fill its fields:
   {"action":"send_key","id":"<worker>","keys":["Enter"]}   named keys (Enter, C-c)
   {"action":"restart_session","id":"<worker>"}            restart a wedged worker
 
-  {"action":"send_notification","message":"<what the human must know / decide>"}
+  {"action":"send_notification","message":"<what the human must know / decide>",
+   "id":"<flagged worker to attach, optional>"}
      Surface a blocker or notice to the human — journaled and shown on this
-     tick's line. This is the ONLY way the human hears anything; looop emits no
-     other banner. Two cases:
+     tick's line. If the operator wired a `notification` command in config it
+     ALSO fires (e.g. pops a tmux window onto the worker); pass `id` = the
+     flagged worker's session id so that hook can `looop attach` it. Two cases:
        1. YOU, the pulse, are blocked on a human editing the world (a goal, the
           PLAYBOOK, creds, a priority call) — which the next tick observes.
        2. A worker is ⚑flagged and waiting for the human: relay its note and tell
