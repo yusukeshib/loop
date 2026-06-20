@@ -267,30 +267,6 @@ fn is_executable(_p: &std::path::Path) -> bool {
     true
 }
 
-/// Is the process alive? A direct `kill(pid, 0)` syscall (no subprocess) — the
-/// FFI shape mirrors `main::restore_sigpipe`'s raw `signal` declaration, so we
-/// stay crate-free. `kill(pid, 0)` sends no signal but performs the existence +
-/// permission check: it returns 0 when the process exists and is signalable,
-/// matching the old `kill -0` exit status exactly (EPERM/ESRCH both → not 0 →
-/// treated as not-alive, as the shell did).
-#[cfg(unix)]
-pub fn pid_alive(pid: &str) -> bool {
-    let Ok(pid) = pid.trim().parse::<i32>() else {
-        return false;
-    };
-    if pid <= 0 {
-        return false;
-    }
-    unsafe extern "C" {
-        fn kill(pid: i32, sig: i32) -> i32;
-    }
-    unsafe { kill(pid, 0) == 0 }
-}
-#[cfg(not(unix))]
-pub fn pid_alive(_pid: &str) -> bool {
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,16 +322,5 @@ mod tests {
         let h = content_hash(b"");
         assert_eq!(h.len(), 32);
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pid_alive_detects_self_and_rejects_garbage() {
-        // Our own process is always signalable by ourselves.
-        assert!(pid_alive(&std::process::id().to_string()));
-        assert!(!pid_alive("not-a-pid"));
-        assert!(!pid_alive(""));
-        assert!(!pid_alive("0"));
-        assert!(!pid_alive("-1"));
     }
 }

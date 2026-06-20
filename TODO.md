@@ -55,9 +55,15 @@ Each box is meant to land as its own commit.
   "lease" (K8s analogy) has no real mutual exclusion.
 - [ ] **`current_exe` re-exec fragility.** The detached supervisor re-execs the
   running binary; an upgrade / `nix gc` / move during a long-lived pulse can leave
-  `current_exe` pointing at a stale or deleted inode.
-- [ ] **Single-instance lock liveness.** mkdir-lock + PID-liveness check can wedge
-  on PID reuse and is not safe on a shared/NFS data dir.
+  `current_exe` pointing at a stale or deleted inode. *Note:* the re-exec lives in
+  the babysit library (`bs.run` re-execs `current_exe()`), not in looop — looop
+  only receives it via `run_detached_worker`. A real fix is an upstream babysit
+  change (accept an explicit supervisor path); not a looop-side quick win.
+- [x] **Single-instance lock liveness.** Replaced the mkdir-lock + PID-liveness
+  check with a `flock(2)` on `<data>/.lock/lock`: the kernel releases it when the
+  pulse dies for any reason, so there is no stale lock to reclaim and no PID-reuse
+  false positive that could wedge the next start. `looop status` reads liveness
+  the same way. (NFS, where flock is unreliable, remains a caveat.)
 - [ ] **`content_hash` is a hand-rolled FNV-style hash** for the world-identity
   check. Collisions are astronomically unlikely, but a vetted hash would be one
   less bespoke primitive in the safety-critical path.
