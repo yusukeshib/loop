@@ -62,7 +62,7 @@ Usage:
                                 move); --tail N shows only the last N
   looop cost [today|all|--json]   report LLM spend recorded in the cost ledger
                                 (ticks are metered automatically; workers
-                                self-report via 'looop _cost')
+                                self-report via 'looop _ cost')
   looop config zsh|bash          print shell integration (completions);
                                 add eval "$(looop config zsh)" to your ~/.zshrc
                                 (or eval "$(looop config bash)" to ~/.bashrc)

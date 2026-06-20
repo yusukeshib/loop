@@ -310,7 +310,7 @@ pub fn tick(paths: &Paths) -> bool {
 }
 
 /// Best-effort: this tick's recorded spend, read back from the cost ledger (the
-/// runner's `_fmt` seam writes the row before `run_streamed` returns). `None`
+/// runner's `_ fmt` seam writes the row before `run_streamed` returns). `None`
 /// when the runner doesn't meter (e.g. the claude tick) or nothing was recorded.
 fn tick_cost(paths: &Paths, cost_id: &str) -> Option<f64> {
     let text = fs::read_to_string(paths.cost_ledger()).ok()?;

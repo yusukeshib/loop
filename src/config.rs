@@ -4,14 +4,14 @@
 //! disposable AI move (stdin = the tick prompt). `interactive` = how to launch
 //! a worker agent; {{prompt_file}} is substituted with the worker's prompt file.
 //!
-//! TICK COST ACCOUNTING (H3): both runners pipe their tick through `_fmt`, which
-//! meters spend into the cost ledger. pi emits per-message usage (`_fmt` sums it);
+//! TICK COST ACCOUNTING (H3): both runners pipe their tick through `_ fmt`, which
+//! meters spend into the cost ledger. pi emits per-message usage (`_ fmt` sums it);
 //! claude emits a single cumulative `total_cost_usd` in its stream-json `result`
-//! event (`_fmt` takes it as-is). Previously the claude tick ran as plain
-//! `claude -p` with no `_fmt` seam, so `looop cost` always showed $0 for claude
+//! event (`_ fmt` takes it as-is). Previously the claude tick ran as plain
+//! `claude -p` with no `_ fmt` seam, so `looop cost` always showed $0 for claude
 //! ticks — accounting was asymmetric between runners. The default now routes
-//! claude through `--output-format stream-json | _fmt` so both runners meter
-//! symmetrically. (Worker sessions still self-report via `looop _cost`,
+//! claude through `--output-format stream-json | _ fmt` so both runners meter
+//! symmetrically. (Worker sessions still self-report via `looop _ cost`,
 //! independent of the tick seam.)
 //!
 //! MODEL ALLOCATION (M4): the tick is the highest-leverage call — it picks the
@@ -32,12 +32,12 @@ pub const DEFAULT_CONFIG: &str = r#"{
   "default": "pi",
   "runners": {
     "claude": {
-      "tick": "claude -p --output-format stream-json --verbose --dangerously-skip-permissions | \"$LOOOP_BIN\" _fmt",
+      "tick": "claude -p --output-format stream-json --verbose --dangerously-skip-permissions | \"$LOOOP_BIN\" _ fmt",
       "interactive": "claude \"$(cat {{prompt_file}})\"",
       "resume": "claude --resume"
     },
     "pi": {
-      "tick": "pi -p --mode json -ne --model claude-opus-4-8 --thinking low 'Execute the looop tick instructions provided on stdin.' | \"$LOOOP_BIN\" _fmt",
+      "tick": "pi -p --mode json -ne --model claude-opus-4-8 --thinking low 'Execute the looop tick instructions provided on stdin.' | \"$LOOOP_BIN\" _ fmt",
       "interactive": "pi --model claude-opus-4-8 --thinking medium @{{prompt_file}}",
       "resume": "pi --session"
     }
