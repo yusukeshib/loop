@@ -61,11 +61,18 @@ pub enum Action {
     SendKey { id: String, keys: Vec<String> },
     /// Restart a wedged worker's wrapped command.
     RestartSession { id: String },
-    /// Surface a blocker / notice to the human. There is NO parked session and
-    /// NO state file: the notice is just journaled (and shown on the tick line);
-    /// the human resolves it by editing the world (a goal / the PLAYBOOK /
-    /// creds), which the next tick observes — level-triggered, no reply channel.
-    SendNotification { message: String },
+    /// Surface a blocker / notice to the human. Journaled (and shown on the tick
+    /// line); if `notification` is wired in config, looop also fires that command
+    /// (e.g. pop a tmux window onto the flagged worker). `id` is the worker
+    /// session to attach when relaying a flag — it populates `{{id}}` / `$LOOOP_ID`
+    /// in the notification command. The human resolves the notice by editing the
+    /// world (a goal / the PLAYBOOK / creds) or attaching to the worker, which the
+    /// next tick observes — level-triggered, no reply channel.
+    SendNotification {
+        message: String,
+        #[serde(default)]
+        id: String,
+    },
 }
 
 /// One tick's decision: the action plus the metadata that rides alongside it.
@@ -284,15 +291,42 @@ fn execute_inner(paths: &Paths, action: &Action) -> Result<String> {
             Ok(format!("restart {s}"))
         }
 
-        Action::SendNotification { message } => {
+        Action::SendNotification { message, id } => {
             let msg = message.trim();
             if msg.is_empty() {
                 bail!("send_notification: empty message");
             }
-            // No file, no parked session: the journal line IS the notice.
+            // The journal line IS the notice. If the operator wired a
+            // `notification` command in config, also fire it (best-effort,
+            // detached — a failed hook never fails the tick) so a flag can pop
+            // a tmux window onto the waiting worker.
+            fire_notification_hook(paths, msg, id.trim());
             Ok(format!("notify · {msg}"))
         }
     }
+}
+
+/// Fire the operator's optional `notification` command (config `.notification`)
+/// when a `send_notification` action runs. Substitutes `{{message}}` / `{{id}}`
+/// and exports `$LOOOP_MESSAGE` / `$LOOOP_ID`, then spawns it DETACHED via bash
+/// in the data dir. Best-effort: a missing hook, a config error, or a spawn
+/// failure is silently ignored — the notice is already journaled, so the hook is
+/// pure surfacing and must never fail (or block) the tick.
+fn fire_notification_hook(paths: &Paths, message: &str, id: &str) {
+    let Ok(cfg) = crate::config::Config::load(paths) else {
+        return;
+    };
+    let Some(cmd) = cfg.notification() else {
+        return;
+    };
+    let rendered = cmd.replace("{{message}}", message).replace("{{id}}", id);
+    let _ = std::process::Command::new("bash")
+        .arg("-lc")
+        .arg(&rendered)
+        .current_dir(&paths.data_dir)
+        .env("LOOOP_MESSAGE", message)
+        .env("LOOOP_ID", id)
+        .spawn(); // detached — do NOT wait; the tick moves on immediately
 }
 
 /// Append one journal line in the canonical `- YYYY-MM-DD HH:MM <text>` format
@@ -449,6 +483,7 @@ mod tests {
                 r#"{"action":"send_notification","message":"creds expired"}"#,
                 Action::SendNotification {
                     message: "creds expired".into(),
+                    id: String::new(),
                 },
             ),
         ] {
@@ -531,6 +566,7 @@ mod tests {
             &p,
             &Action::SendNotification {
                 message: "goals A and B conflict".into(),
+                id: String::new(),
             },
         )
         .unwrap();
@@ -539,7 +575,8 @@ mod tests {
             execute(
                 &p,
                 &Action::SendNotification {
-                    message: "  ".into()
+                    message: "  ".into(),
+                    id: String::new(),
                 }
             )
             .is_err()
@@ -580,7 +617,8 @@ mod tests {
         assert_eq!(goal_of(&Action::Noop { reason: "".into() }), None);
         assert_eq!(
             goal_of(&Action::SendNotification {
-                message: "x".into()
+                message: "x".into(),
+                id: String::new(),
             }),
             None
         );

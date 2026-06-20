@@ -76,7 +76,7 @@ DRIVING A SESSION (a session is a live terminal, not a black box)
 
 CODE / CONFIG / DATA are cleanly separated (all overridable by env)
   EXEC    this one binary                          the program (portable)
-  CONFIG  ${XDG_CONFIG_HOME:-~/.config}/looop.json  one file: runner wiring
+  CONFIG  <DATA>/config.json                       one file: runner wiring
           └ override with $LOOOP_CONFIG            (seeded inline if absent)
             optional knobs: interval/busy_interval/active_interval (cadence),
             session_ttl (corpse retention), max_daily_usd (skip ticks once the

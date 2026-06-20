@@ -2,7 +2,7 @@
 //!
 //! CODE / CONFIG / DATA are cleanly separated and all overridable by env:
 //!   DATA    = $LOOOP_DATA_DIR        or ${XDG_STATE_HOME:-~/.local/state}/looop
-//!   CONFIG  = $LOOOP_CONFIG          or <DATA>/looop.json (per-profile, M5)
+//!   CONFIG  = $LOOOP_CONFIG          or <DATA>/config.json (per-profile, M5)
 //!
 //! We intentionally do NOT use the `directories` crate: it maps XDG dirs to
 //! ~/Library/Application Support on macOS, which would diverge from the bash
@@ -55,7 +55,7 @@ impl Paths {
         // profiles.
         let config = match env::var_os("LOOOP_CONFIG") {
             Some(v) if !v.is_empty() => PathBuf::from(v),
-            _ => data_dir.join("looop.json"),
+            _ => data_dir.join("config.json"),
         };
 
         // Worker-fleet isolation: the session store ALWAYS lives inside this
@@ -134,7 +134,7 @@ impl Paths {
         Paths {
             bin: PathBuf::from("looop"),
             data_dir: dir.clone(),
-            config: dir.join("looop.json"),
+            config: dir.join("config.json"),
             default_profile: false,
         }
     }

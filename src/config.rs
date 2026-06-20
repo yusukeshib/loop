@@ -13,7 +13,7 @@
 //! formatter — there is no `| _ fmt` seam anymore. (Worker sessions self-report
 //! via `looop _ cost`, independent of the tick meter.)
 //!
-//! BACK-COMPAT: a stored `looop.json` written before this change may still end
+//! BACK-COMPAT: a stored config written before this change may still end
 //! its tick command with `| "$LOOOP_BIN" _ fmt`. `runner_cmd` strips that trailing
 //! seam on load (see `strip_fmt_seam`), so old configs keep working unchanged.
 //!
@@ -96,6 +96,22 @@ impl Config {
         Ok(Config { root })
     }
 
+    /// `.notification` — an OPTIONAL shell command template looop runs when a
+    /// `send_notification` action fires (a worker flagged the human, or the pulse
+    /// is blocked on a human edit). looop substitutes `{{message}}` / `{{id}}`
+    /// and also exports `$LOOOP_MESSAGE` / `$LOOOP_ID`, then spawns it detached
+    /// (best-effort — a failure never fails the tick). Typical value pops a tmux
+    /// window onto the flagged worker:
+    ///   "notification": "tmux new-window -n looop 'looop attach {{id}}'"
+    pub fn notification(&self) -> Option<String> {
+        self.root
+            .get("notification")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    }
+
     /// The active runner name (`.default`).
     pub fn default_runner(&self) -> Option<String> {
         self.root
@@ -146,7 +162,7 @@ impl Config {
 /// Strip a trailing `| <bin> _ fmt` (or `_fmt`) seam from a runner command.
 ///
 /// Tick formatting + cost metering moved in-process (`runner::run_streamed`), so
-/// the old external pipe is dead. Older `looop.json` files still carry it; rather
+/// the old external pipe is dead. Older configs still carry it; rather
 /// than force a re-seed (which would clobber user edits) we drop the seam on load.
 /// Only the LAST pipe segment is inspected, and only when it is recognisably the
 /// fmt seam (mentions the looop binary and ends in `_ fmt`/`_fmt`) — any other
