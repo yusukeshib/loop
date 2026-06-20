@@ -127,7 +127,11 @@ enum Sensor {
 
 /// The fixed set of system sensors. Expose another slice of looop's internal
 /// state to the decider by adding one row + a [`Probe`].
-const SYSTEM_SENSORS: &[(&str, Probe)] = &[("sessions", sys_sessions), ("claims", sys_claims)];
+const SYSTEM_SENSORS: &[(&str, Probe)] = &[
+    ("sessions", sys_sessions),
+    ("claims", sys_claims),
+    ("goals", sys_goals),
+];
 
 /// One sensor's outcome, for the run summary.
 struct Reading {
@@ -255,6 +259,46 @@ fn sys_claims(paths: &Paths) -> serde_json::Value {
         })
         .collect();
     serde_json::json!({ "signal": leases })
+}
+
+/// System sensor: per-goal staleness, so the decider can avoid STARVING a goal
+/// (fairness). For every current `goals/*.md` it reports how long since looop
+/// last acted on that goal (`age_s`, null = never). The whole reading lives in
+/// `.detail`: ages are time-volatile, so they must NOT feed the wake hash (an
+/// empty `.signal` keeps sys-goals from ever waking the loop on its own — the
+/// goal SET already wakes it via goals/*.md). When awake for other reasons, the
+/// decider sees which goals it has been neglecting.
+fn sys_goals(paths: &Paths) -> serde_json::Value {
+    let activity: serde_json::Map<String, serde_json::Value> =
+        fs::read_to_string(paths.goal_activity())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+    let now = util::now_unix();
+
+    let mut ids: Vec<String> = fs::read_dir(paths.goals_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().map(|x| x == "md").unwrap_or(false))
+        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+        .collect();
+    ids.sort();
+
+    let mut goals = serde_json::Map::new();
+    for id in ids {
+        let last = activity.get(&id).and_then(|v| v.as_u64());
+        let entry = match last {
+            Some(ts) => serde_json::json!({
+                "last_acted_unix": ts,
+                "age_s": now.saturating_sub(ts),
+            }),
+            None => serde_json::json!({ "last_acted_unix": null, "age_s": null }),
+        };
+        goals.insert(id, entry);
+    }
+    serde_json::json!({ "signal": {}, "detail": { "goals": goals } })
 }
 
 /// Sorted list of `sensors/*.sh`.
@@ -385,6 +429,32 @@ mod tests {
         assert_eq!(leases[0]["name"], "repo-a");
         assert_eq!(leases[1]["name"], "repo-b");
         assert_eq!(leases[0]["claim"]["session"], "w1");
+    }
+
+    #[test]
+    fn sys_goals_reports_age_per_goal_and_never_for_unacted() {
+        let p = Paths::temp();
+        fs::create_dir_all(p.goals_dir()).unwrap();
+        fs::write(p.goals_dir().join("triage.md"), b"goal: triage\n").unwrap();
+        fs::write(p.goals_dir().join("ship.md"), b"goal: ship\n").unwrap();
+        // triage was acted on a while ago; ship never.
+        let then = util::now_unix().saturating_sub(120);
+        fs::write(p.goal_activity(), format!(r#"{{"triage":{then}}}"#)).unwrap();
+
+        let v = sys_goals(&p);
+        // ages are volatile -> only in .detail, never in the wake signal.
+        assert_eq!(v["signal"], serde_json::json!({}));
+        let goals = &v["detail"]["goals"];
+        assert!(
+            goals["triage"]["age_s"].as_u64().unwrap() >= 120,
+            "acted goal reports a real age"
+        );
+        assert!(
+            goals["ship"]["age_s"].is_null(),
+            "never-acted goal reports null age"
+        );
+        // An empty signal must never wake the loop.
+        assert_eq!(crate::worldhash::wake_signal(v), serde_json::json!({}));
     }
 
     #[test]

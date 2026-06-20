@@ -24,10 +24,11 @@ runs/
 claims/
 reports/
 .lock/
+.decision.json
 .last-tick-hash
-.next-interval
 .tick-backoff
 .cost-unmetered
+.goal-activity.json
 tick.log
 events.jsonl
 cost.jsonl

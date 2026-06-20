@@ -117,6 +117,11 @@ impl Paths {
     pub fn prompts_dir(&self) -> PathBuf {
         self.data_dir.join("prompts")
     }
+    /// Per-goal "last acted" ledger (goal id -> RFC3339 ts). Drives the
+    /// `sys-goals` staleness reading so the decider can avoid starving a goal.
+    pub fn goal_activity(&self) -> PathBuf {
+        self.data_dir.join(".goal-activity.json")
+    }
 
     /// A throwaway `Paths` rooted at a freshly-created temp data dir. Test-only.
     #[cfg(test)]

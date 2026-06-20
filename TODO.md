@@ -41,10 +41,16 @@ Each box is meant to land as its own commit.
 
 ## Deferred — needs design, not a quick patch
 
-- [ ] **No fairness across goals (starvation).** One move per tick + "most important
-  move" means a perpetually-changing high-priority goal starves the rest. K8s
-  reconciles every object; looop reconciles one. Needs an aging/round-robin notion
-  before it's safe to "fix" — left as a documented limitation for now.
+- [x] **No fairness across goals (starvation).** One move per tick + "most
+  important move" means a perpetually-changing high-priority goal can starve the
+  rest. *Done (visibility, not a hard scheduler):* a `sys-goals` system sensor now
+  surfaces per-goal staleness (`.detail.goals[id].age_s`), stamped by the executor
+  whenever a move targets a goal. The prompt tells the decider to prefer the
+  longest-neglected of comparable ready goals. Ages live in `.detail` only, so
+  they never wake the loop. This keeps RULE 1 (one move/tick) and "the AI judges
+  importance" intact — it just gives the AI the data to avoid starving a goal
+  (note: workers run in parallel, so dispatching a neglected goal doesn't block
+  the others).
 - [x] **Budget breaker fails open for non-pi/claude runners.** Cost metering was
   hard-wired to pi/claude NDJSON shapes; a custom runner produced no metered cost,
   so `max_daily_usd` silently never tripped. *Done:* (1) a custom runner declares
@@ -77,6 +83,19 @@ Each box is meant to land as its own commit.
   pulse dies for any reason, so there is no stale lock to reclaim and no PID-reuse
   false positive that could wedge the next start. `looop status` reads liveness
   the same way. (NFS, where flock is unreliable, remains a caveat.)
-- [ ] **`content_hash` is a hand-rolled FNV-style hash** for the world-identity
-  check. Collisions are astronomically unlikely, but a vetted hash would be one
-  less bespoke primitive in the safety-critical path.
+- [x] **`content_hash` is a hand-rolled FNV-style hash** — *won't fix (the current
+  choice is correct).* It's used only for change-detection (`world_hash` vs the
+  last beat), not security; a 128-bit FNV-1a collision is astronomically unlikely
+  and self-heals on the next real change. Crucially it must stay STABLE across
+  restarts/upgrades because `.last-tick-hash` is persisted — std `DefaultHasher`
+  (SipHash) has no cross-version stability guarantee, and pulling in `sha2`/etc.
+  is an unnecessary dependency for zero benefit. The bespoke FNV is the right call.
+
+---
+
+## Out of scope (deliberately not addressed here)
+
+The original review's **security** findings were set aside by request and remain
+open: `run_shell` executes an LLM-chosen command with no gate; the decider can
+rewrite its own guardrails via `write_playbook`; the default runner bypasses
+permission prompts. Track these separately if/when security is in scope.
