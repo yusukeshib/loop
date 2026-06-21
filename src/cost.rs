@@ -207,7 +207,7 @@ impl CostMeter {
         match v.get("type").and_then(|t| t.as_str()) {
             Some("message_end") => {
                 self.pi_sum += v
-                    .pointer("/usage/cost/total")
+                    .pointer("/message/usage/cost/total")
                     .and_then(|c| c.as_f64())
                     .unwrap_or(0.0);
             }
@@ -463,8 +463,8 @@ mod tests {
     #[test]
     fn cost_meter_sums_pi_per_message_usage() {
         let mut m = CostMeter::default();
-        m.ingest(r#"{"type":"message_end","usage":{"cost":{"total":0.10}}}"#);
-        m.ingest(r#"{"type":"message_end","usage":{"cost":{"total":0.25}}}"#);
+        m.ingest(r#"{"type":"message_end","message":{"usage":{"cost":{"total":0.10}}}}"#);
+        m.ingest(r#"{"type":"message_end","message":{"usage":{"cost":{"total":0.25}}}}"#);
         m.ingest(r#"{"type":"tool_execution_start"}"#); // no usage — ignored
         m.ingest("not json"); // ignored
         assert!((m.total() - 0.35).abs() < 1e-9);
@@ -482,7 +482,7 @@ mod tests {
         // A stream carrying both shapes must NOT double-count: claude's
         // authoritative cumulative total wins, pi's per-message sum is dropped.
         let mut m = CostMeter::default();
-        m.ingest(r#"{"type":"message_end","usage":{"cost":{"total":0.50}}}"#);
+        m.ingest(r#"{"type":"message_end","message":{"usage":{"cost":{"total":0.50}}}}"#);
         m.ingest(r#"{"type":"result","total_cost_usd":2.00}"#);
         assert!((m.total() - 2.00).abs() < 1e-9);
     }
