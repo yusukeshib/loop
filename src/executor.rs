@@ -208,8 +208,12 @@ fn execute_inner(paths: &Paths, action: &Action) -> Result<String> {
         }),
 
         Action::RunShell { cmd, reason } => {
+            // `bash -c` (NOT `-lc`): a non-interactive, non-login shell sources no
+            // rc files, so the command runs against looop's inherited environment
+            // rather than re-running the operator's login profile every beat
+            // (hermetic + cheaper).
             let out = std::process::Command::new("bash")
-                .arg("-lc")
+                .arg("-c")
                 .arg(cmd)
                 .current_dir(&paths.data_dir)
                 .output()
@@ -321,7 +325,7 @@ fn fire_notification_hook(paths: &Paths, message: &str, id: &str) {
     };
     let rendered = cmd.replace("{{message}}", message).replace("{{id}}", id);
     let _ = std::process::Command::new("bash")
-        .arg("-lc")
+        .arg("-c") // non-login: inherit looop's env, don't re-source the login profile
         .arg(&rendered)
         .current_dir(&paths.data_dir)
         .env("LOOOP_MESSAGE", message)

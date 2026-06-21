@@ -137,9 +137,13 @@ pub fn cmd_start_session(paths: &Paths, args: &[String]) -> Result<ExitCode> {
 
     // Launch the worker detached, IN-PROCESS via the babysit library (no
     // `babysit` binary). babysit re-execs looop as the headless supervisor.
+    // `-c`, not `-lc`: a non-login shell sources no rc files, so the worker
+    // launches against looop's inherited environment instead of re-running the
+    // operator's login profile (hermetic + cheaper). The runner template itself
+    // is still a shell string ($(cat ...), &&), so the shell stays.
     spawn_detached(
         paths,
-        vec!["bash".to_string(), "-lc".to_string(), launch],
+        vec!["bash".to_string(), "-c".to_string(), launch],
         &session,
     )?;
 
