@@ -88,8 +88,8 @@ The pulse launches each worker in the data dir; if a worker needs to touch code
 it provisions its OWN sandbox (box if available, else git worktree), as told by
 the PLAYBOOK. looop itself has no notion of repos.
 
-Fix judgment by editing PLAYBOOK.md (in the data dir) and committing — it takes
-effect next tick."#,
+Fix judgment by editing PLAYBOOK.md (in the data dir) — it takes effect next
+tick. (looop does not version the data dir; `git init` it yourself for history.)"#,
         config = paths.config.display(),
         data = paths.data_dir.display(),
         fleet = paths.data_dir.join("sessions").display(),

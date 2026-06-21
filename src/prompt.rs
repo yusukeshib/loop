@@ -9,8 +9,38 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// The immutable minimal norms. Unlike the PLAYBOOK (which the AI may rewrite via
+/// `write_playbook`), this lives in the binary and CANNOT be edited by any move.
+/// It is injected ahead of the PLAYBOOK and OVERRIDES it on any conflict, so the
+/// loop can't weaken its own irreversibility/run_shell guardrails by grooming the
+/// PLAYBOOK. The PLAYBOOK is operational tuning UNDER this constitution.
+const CONSTITUTION: &str = r#"These norms are FIXED (compiled into looop). They override the PLAYBOOK on any
+conflict, and no move — including write_playbook — can remove or weaken them.
+
+1. NEVER do irreversible things automatically: merging, deploying, deleting data,
+   closing issues, publishing public comments, force-pushing, sending money. For
+   any of these: PREPARE fully, then start (or steer) a worker that raises a
+   ⚯lag and WAITS for a human. The human approves by attaching — never the AI.
+2. run_shell is ONE ad-hoc, REVERSIBLE, NON-DESTRUCTIVE command only (a query, a
+   draft, a read). Anything irreversible/destructive (rule 1) must NOT go through
+   run_shell; it must go through a worker + ⚯lag. When unsure, treat it as
+   irreversible.
+3. SINGLE-WRITER POLICY FILES: only the pulse (this tick) writes PLAYBOOK.md,
+   goals/ and sensors/, and only via the typed actions below — never by editing
+   files directly.
+4. ASK, DON'T GUESS: when you lack the information or authority to choose safely,
+   surface it (send_notification, or a worker ⚯lag) rather than guess. Asking is
+   cheaper than a wrong irreversible move.
+5. write_playbook may tune priorities and add rules, but MUST keep these five
+   norms intact. The PLAYBOOK refines judgment beneath them; it never overrides
+   them.
+"#;
+
 const INSTRUCTIONS: &str = r#"You are "looop", a personal operations agent. This is one tick of a loop; your
 process is disposable. Your working directory is the loop's DATA dir (__DATA__).
+
+A fixed CONSTITUTION (below, compiled into looop) sets the non-negotiable norms.
+It OVERRIDES the PLAYBOOK on any conflict, and no move can weaken it.
 
 Read the PLAYBOOK, goals, sensor readings and sessions below, then decide the
 SINGLE most important move — and stop.
@@ -120,6 +150,32 @@ fn sorted_glob(dir: &Path, ext: &str) -> Vec<PathBuf> {
     v
 }
 
+/// The single most-neglected goal: the top-level `goals/*.md` looop has gone
+/// longest without acting on (a goal never acted on outranks any acted one).
+/// `None` when there are no goals. Computed by looop — not left to the AI to scan
+/// — so the fairness nudge names a concrete goal the decider must justify
+/// skipping (RULE: one move/beat can otherwise starve the quiet goals).
+fn most_neglected_goal(paths: &Paths) -> Option<String> {
+    let activity: serde_json::Map<String, serde_json::Value> =
+        fs::read_to_string(paths.goal_activity())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+    let mut goals: Vec<String> = fs::read_dir(paths.goals_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().map(|x| x == "md").unwrap_or(false))
+        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+        .collect();
+    goals.sort(); // deterministic tie-break
+    // last-acted unix; never-acted => 0 (oldest possible) => ranked most neglected.
+    goals
+        .into_iter()
+        .min_by_key(|id| activity.get(id).and_then(|v| v.as_u64()).unwrap_or(0))
+}
+
 fn tail_lines(text: &str, n: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let start = lines.len().saturating_sub(n);
@@ -133,6 +189,12 @@ pub fn build_prompt(paths: &Paths, snap_dir: &Path) -> String {
         .replace("__DATA__", &paths.data_dir.to_string_lossy())
         .replace("__NOW__", &util::date_fmt("%Y-%m-%d %H:%M %Z"));
     out.push_str(&instr);
+
+    // CONSTITUTION (immutable, binary-embedded) — ahead of the PLAYBOOK and
+    // overriding it. The AI can rewrite the PLAYBOOK but never this.
+    out.push_str("=== CONSTITUTION (immutable — overrides PLAYBOOK) ===\n");
+    out.push_str(CONSTITUTION);
+    out.push('\n');
 
     // PLAYBOOK.
     out.push_str("=== PLAYBOOK ===\n");
@@ -172,6 +234,21 @@ pub fn build_prompt(paths: &Paths, snap_dir: &Path) -> String {
         out.push('\n');
     }
 
+    // FAIRNESS (computed by looop, not left to the AI to eyeball sys-goals).
+    // Naming the concrete most-neglected goal turns the advisory staleness
+    // reading into a directive the decider must answer to: serve it, or justify
+    // skipping it in the journal.
+    if let Some(g) = most_neglected_goal(paths) {
+        out.push_str("\n=== FAIRNESS (computed by looop) ===\n");
+        let _ = writeln!(
+            out,
+            "Most neglected goal: `{g}`. You make ONE move per beat, so a loud,\n\
+             constantly-changing goal can starve the quiet ones. If `{g}` is READY and\n\
+             not clearly lower priority than the alternatives, prefer it THIS beat.\n\
+             Otherwise, say in your `journal` why you're skipping it."
+        );
+    }
+
     // RECENT JOURNAL.
     out.push_str("\n=== RECENT JOURNAL ===\n");
     match fs::read_to_string(paths.journal()) {
@@ -203,6 +280,7 @@ mod tests {
         let p = fixture();
         let out = build_prompt(&p, &p.snapshots_dir());
         for marker in [
+            "=== CONSTITUTION (immutable — overrides PLAYBOOK) ===",
             "=== PLAYBOOK ===",
             "=== GOALS ===",
             "=== SENSOR READINGS ===",
@@ -210,7 +288,57 @@ mod tests {
         ] {
             assert!(out.contains(marker), "missing section: {marker}");
         }
+        // The immutable norms are inlined ahead of the (mutable) PLAYBOOK.
+        assert!(
+            out.find("=== CONSTITUTION").unwrap() < out.find("=== PLAYBOOK").unwrap(),
+            "constitution must precede the playbook"
+        );
+        assert!(
+            out.contains("no move — including write_playbook — can remove or weaken them"),
+            "constitution states its own immutability"
+        );
         assert!(out.contains("PB RULES"), "playbook body inlined");
         assert!(out.contains("triage the inbox"), "goal body inlined");
+    }
+
+    #[test]
+    fn never_acted_goal_outranks_an_acted_one_for_fairness() {
+        let p = fixture(); // has goals/triage.md
+        fs::write(p.goals_dir().join("ship.md"), b"ship it\n").unwrap();
+        // triage was acted on recently; ship never has => ship is most neglected.
+        fs::write(
+            p.goal_activity(),
+            format!(r#"{{"triage":{}}}"#, util::now_unix()),
+        )
+        .unwrap();
+        assert_eq!(most_neglected_goal(&p), Some("ship".into()));
+
+        let out = build_prompt(&p, &p.snapshots_dir());
+        assert!(out.contains("=== FAIRNESS (computed by looop) ==="));
+        assert!(out.contains("Most neglected goal: `ship`"));
+    }
+
+    #[test]
+    fn fairness_picks_the_oldest_acted_goal_when_all_acted() {
+        let p = fixture();
+        fs::write(p.goals_dir().join("ship.md"), b"ship it\n").unwrap();
+        let now = util::now_unix();
+        // triage acted long ago, ship acted just now => triage is most neglected.
+        fs::write(
+            p.goal_activity(),
+            format!(r#"{{"triage":{},"ship":{now}}}"#, now - 9999),
+        )
+        .unwrap();
+        assert_eq!(most_neglected_goal(&p), Some("triage".into()));
+    }
+
+    #[test]
+    fn no_goals_means_no_fairness_section() {
+        let p = Paths::temp();
+        fs::create_dir_all(p.goals_dir()).unwrap();
+        fs::write(p.playbook(), b"pb\n").unwrap();
+        assert_eq!(most_neglected_goal(&p), None);
+        let out = build_prompt(&p, &p.snapshots_dir());
+        assert!(!out.contains("=== FAIRNESS"));
     }
 }

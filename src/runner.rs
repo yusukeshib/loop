@@ -20,7 +20,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Run `tick_cmd` (a shell pipeline) under `bash -lc`, with cwd at the data dir
+/// Run `tick_cmd` (a shell pipeline) under `bash -c`, with cwd at the data dir
 /// and stdin from `prompt_file`. stdout+stderr are merged; each line is metered
 /// into a `CostMeter`, rendered via `cost::format_line`, stamped, and written to
 /// every `tee` file (the replay archive). The run's resolved spend is recorded
@@ -45,7 +45,10 @@ pub fn run_streamed(
     let script = format!("{{ {tick_cmd} ; }} 2>&1");
 
     let mut cmd = Command::new("bash");
-    cmd.arg("-lc")
+    // `-c`, not `-lc`: a non-login shell sources no rc files, so the runner
+    // pipeline runs against looop's inherited environment instead of re-running
+    // the operator's login profile on every beat (hermetic + cheaper).
+    cmd.arg("-c")
         .arg(&script)
         .current_dir(&paths.data_dir)
         .stdin(Stdio::from(stdin))

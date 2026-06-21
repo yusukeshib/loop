@@ -122,6 +122,13 @@ impl Paths {
     pub fn goal_activity(&self) -> PathBuf {
         self.data_dir.join(".goal-activity.json")
     }
+    /// Write-ahead intent log for the in-flight NON-IDEMPOTENT action (run_shell
+    /// / send_notification). Written just before the side effect, removed just
+    /// after. A leftover file at beat start means the previous beat died mid
+    /// side-effect — surfaced so a half-run command isn't silently re-fired.
+    pub fn action_wal(&self) -> PathBuf {
+        self.data_dir.join(".action-wal.json")
+    }
 
     /// A throwaway `Paths` rooted at a freshly-created temp data dir. Test-only.
     #[cfg(test)]

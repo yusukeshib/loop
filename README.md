@@ -198,11 +198,16 @@ pulse.)
 - **Config** — `$LOOOP_DATA_DIR/config.json` (override `LOOOP_CONFIG`). Lives
   inside the data dir so a profile is fully self-contained. One file: runner
   wiring and tick cadence. Default runner is `pi`; `claude` is built in.
-- **Data / memory** — `$XDG_STATE_HOME/looop/` (override `LOOOP_DATA_DIR`). A git
-  repo holding the PLAYBOOK, goals, journal, and sensors. Worker and pulse
-  sessions live under `sessions/` in the same dir, so a profile is fully
-  self-contained. Pointing `LOOOP_DATA_DIR` elsewhere gives you an isolated
-  **profile** with its own sessions.
+- **Data / memory** — `$XDG_STATE_HOME/looop/` (override `LOOOP_DATA_DIR`). A
+  plain directory holding the PLAYBOOK, goals, journal, and sensors. looop does
+  not version it for you — `git init` the data dir yourself if you want history
+  and rollback of your policy files. Worker and pulse sessions live under
+  `sessions/` in the same dir, so a profile is fully self-contained. Pointing
+  `LOOOP_DATA_DIR` elsewhere gives you an isolated **profile** with its own
+  sessions.
 
 LLM spend is metered automatically (ticks and self-reporting workers) into an
-append-only ledger; see `looop cost`.
+append-only ledger; see `looop cost`. A daily budget breaker is **on by default**
+(`$10/day`): once the day's metered spend hits the cap the loop stops calling the
+LLM until local midnight. Raise it with `max_daily_usd` in config (or
+`LOOOP_MAX_DAILY_USD`), or set it to `0` to disable the breaker.
