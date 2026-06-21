@@ -178,6 +178,89 @@ fn record_goal_activity(paths: &Paths, id: &str) {
     let _ = fs::write(&path, serde_json::Value::Object(map).to_string());
 }
 
+/// Whether re-running this action a second time can cause a DUPLICATE,
+/// non-reversible effect (a second PR comment, a second notification fired).
+/// These are the actions the write-ahead intent log guards (H: crash between
+/// the side effect and the world-hash commit must not silently double-fire).
+/// Everything else is an idempotent overwrite (write_goal/sensor/playbook),
+/// has its own dedup guard (start_worker's same-id alive check), or is a
+/// best-effort nudge whose re-send is harmless.
+fn is_non_idempotent(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::RunShell { .. } | Action::SendNotification { .. }
+    )
+}
+
+/// A stable fingerprint of a non-idempotent action's payload, so a crash report
+/// names WHICH command may have half-run. Not used for dedup (the next beat's
+/// AI re-decides freshly); purely diagnostic.
+fn action_fingerprint(action: &Action) -> String {
+    let canon = match action {
+        Action::RunShell { cmd, .. } => format!("run_shell\n{cmd}"),
+        Action::SendNotification { message, id } => {
+            format!("send_notification\n{message}\n{id}")
+        }
+        _ => kind(action).to_string(),
+    };
+    crate::util::content_hash(canon.as_bytes())
+}
+
+/// Write the write-ahead intent record just BEFORE a non-idempotent side effect.
+/// If the process dies during the effect, this file survives and is detected by
+/// [`warn_if_interrupted`] on the next beat.
+fn begin_intent(paths: &Paths, action: &Action) {
+    let body = serde_json::json!({
+        "kind": kind(action),
+        "fingerprint": action_fingerprint(action),
+        "ts": crate::util::now_unix(),
+    })
+    .to_string();
+    let _ = fs::write(paths.action_wal(), body);
+}
+
+/// Clear the intent record once execute() has returned (Ok OR Err): reaching
+/// this line proves the process did not die DURING the side effect, so there is
+/// nothing to recover. Only an actual crash between begin/clear leaves it.
+fn clear_intent(paths: &Paths) {
+    let _ = fs::remove_file(paths.action_wal());
+}
+
+/// At beat start: if a write-ahead intent record survived, the previous beat
+/// died mid non-idempotent side effect (run_shell / send_notification) before
+/// it could commit the world hash. We do NOT auto-retry (a duplicate command is
+/// worse than a missed one); we surface it durably so a human can check whether
+/// the command actually ran. Idempotent. Returns true when an interrupted
+/// action was found and reported.
+pub fn warn_if_interrupted(paths: &Paths) -> bool {
+    let wal = paths.action_wal();
+    let Ok(raw) = fs::read_to_string(&wal) else {
+        return false;
+    };
+    let _ = fs::remove_file(&wal); // one-shot report
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+    let akind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("?");
+    let fp = v.get("fingerprint").and_then(|x| x.as_str()).unwrap_or("?");
+    crate::util::event(
+        crate::util::Level::Warn,
+        "tick.interrupted",
+        &format!(
+            "previous beat died mid '{akind}' (a non-idempotent action) before committing \
+             — NOT retried automatically; verify it didn't half-run (fp {fp})"
+        ),
+        &[
+            ("action", serde_json::json!(akind)),
+            ("fingerprint", serde_json::json!(fp)),
+        ],
+    );
+    crate::events::emit(
+        paths,
+        "tick_interrupted",
+        serde_json::json!({ "action": akind, "fingerprint": fp }),
+    );
+    true
+}
+
 fn with_trailing_newline(body: &str) -> String {
     if body.ends_with('\n') {
         body.to_string()
@@ -357,7 +440,19 @@ pub fn consume_decision(paths: &Paths) -> Option<Result<Decided>> {
 
     Some((|| {
         let decision = Decision::parse(&raw)?;
-        let summary = execute(paths, &decision.action)?;
+        // Write-ahead the intent for non-idempotent actions so a crash DURING the
+        // side effect (before the world hash is committed in tick) is detectable
+        // next beat instead of silently re-firing. clear_intent runs whether
+        // execute returns Ok or Err — both prove we survived the side effect.
+        let guarded = is_non_idempotent(&decision.action);
+        if guarded {
+            begin_intent(paths, &decision.action);
+        }
+        let exec_result = execute(paths, &decision.action);
+        if guarded {
+            clear_intent(paths);
+        }
+        let summary = exec_result?;
         // Stamp per-goal activity so sys-goals can surface staleness (fairness:
         // the decider sees which goals it's neglected and can avoid starving
         // them) — only after a successful execute, so a failed move isn't counted.
@@ -591,6 +686,89 @@ mod tests {
     fn consume_decision_absent_is_none() {
         let p = Paths::temp();
         assert!(consume_decision(&p).is_none());
+    }
+
+    #[test]
+    fn only_run_shell_and_notification_are_guarded() {
+        assert!(is_non_idempotent(&Action::RunShell {
+            cmd: "gh pr comment".into(),
+            reason: String::new()
+        }));
+        assert!(is_non_idempotent(&Action::SendNotification {
+            message: "x".into(),
+            id: String::new()
+        }));
+        // Idempotent overwrites / self-guarded / harmless-resend actions are not.
+        assert!(!is_non_idempotent(&Action::Noop { reason: String::new() }));
+        assert!(!is_non_idempotent(&Action::WriteGoal {
+            id: "g".into(),
+            body: "b".into()
+        }));
+        assert!(!is_non_idempotent(&Action::StartWorker {
+            id: "w".into(),
+            prompt: "p".into()
+        }));
+    }
+
+    #[test]
+    fn consume_decision_clears_wal_around_a_guarded_action() {
+        let p = Paths::temp();
+        fs::write(
+            p.data_dir.join(DECISION_FILE),
+            r#"{"action":"send_notification","message":"creds expired","journal":"told human"}"#,
+        )
+        .unwrap();
+        consume_decision(&p).expect("decision present").unwrap();
+        // A successful (non-crashing) beat leaves NO intent behind.
+        assert!(
+            !p.action_wal().exists(),
+            "the write-ahead intent is cleared once execute returns"
+        );
+        // And nothing to recover next beat.
+        assert!(!warn_if_interrupted(&p), "no interrupted action to report");
+    }
+
+    #[test]
+    fn warn_if_interrupted_detects_and_clears_a_stale_intent() {
+        let p = Paths::temp();
+        // Simulate a crash mid side-effect: an intent record left behind.
+        begin_intent(
+            &p,
+            &Action::RunShell {
+                cmd: "gh pr comment 1 -b hi".into(),
+                reason: String::new(),
+            },
+        );
+        assert!(p.action_wal().exists(), "intent written before the effect");
+        assert!(
+            warn_if_interrupted(&p),
+            "a leftover intent is reported as an interrupted beat"
+        );
+        assert!(
+            !p.action_wal().exists(),
+            "the report is one-shot — the stale intent is cleared"
+        );
+        // Idempotent: a second pass finds nothing.
+        assert!(!warn_if_interrupted(&p));
+    }
+
+    #[test]
+    fn fingerprint_is_stable_and_payload_sensitive() {
+        let a = Action::RunShell {
+            cmd: "echo a".into(),
+            reason: "r1".into(),
+        };
+        let a2 = Action::RunShell {
+            cmd: "echo a".into(),
+            reason: "r2-ignored".into(),
+        };
+        let b = Action::RunShell {
+            cmd: "echo b".into(),
+            reason: "r1".into(),
+        };
+        // Same cmd => same fingerprint (reason is not part of the effect).
+        assert_eq!(action_fingerprint(&a), action_fingerprint(&a2));
+        assert_ne!(action_fingerprint(&a), action_fingerprint(&b));
     }
 
     #[test]

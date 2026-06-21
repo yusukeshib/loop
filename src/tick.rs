@@ -109,6 +109,12 @@ pub fn tick(paths: &Paths, force: bool) -> TickOutcome {
         std::time::Duration::from_secs(crate::run::session_ttl_secs(paths)),
     );
     gate::reap_stale_claims(paths);
+    // Crash recovery: if the previous beat died mid non-idempotent side effect
+    // (run_shell / send_notification) before committing its world hash, surface
+    // it durably here. We do NOT auto-retry — a duplicate command is worse than
+    // a missed one; a human verifies whether it half-ran (H: side-effect/commit
+    // gap).
+    executor::warn_if_interrupted(paths);
 
     // 1. sense — level-triggered: wipe last beat's snapshots first.
     let snap = paths.snapshots_dir();
