@@ -124,6 +124,13 @@ fn main() -> ExitCode {
                 Some("kill") => {
                     deps::require_deps(&paths).and_then(|_| session::cmd_kill(&paths, &rest[1..]))
                 }
+                // STEER: nudge an interactive worker (type input) / peek at its
+                // current screen. send refuses the pulse; screenshot is read-only.
+                Some("send") => {
+                    deps::require_deps(&paths).and_then(|_| session::cmd_send(&paths, &rest[1..]))
+                }
+                Some("screenshot") => deps::require_deps(&paths)
+                    .and_then(|_| session::cmd_screenshot(&paths, &rest[1..])),
                 Some("claim") => {
                     deps::require_deps(&paths).and_then(|_| gate::cmd_claim(&paths, &rest[1..]))
                 }
@@ -133,7 +140,7 @@ fn main() -> ExitCode {
                 Some("cost") => cost::cmd_cost_record(&paths, &rest[1..]),
                 other => {
                     eprintln!(
-                        "looop _: unknown internal verb {other:?} (root: state, wait, asks, answer, goal, sensor, playbook, run, worker; worker: ask, kill, claim, unclaim, cost; pulse)"
+                        "looop _: unknown internal verb {other:?} (root: state, wait, asks, answer, goal, sensor, playbook, run, worker, send, screenshot; worker: ask, kill, claim, unclaim, cost; pulse)"
                     );
                     Ok(ExitCode::from(1))
                 }
