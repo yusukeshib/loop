@@ -525,12 +525,25 @@ impl App {
             }
         }
 
-        // window[0] is the bottom row; render top→bottom, blanks where history
-        // runs out (the oldest screenful sitting below the top of the pane).
-        let lines: Vec<Line> = (0..pane_h)
-            .rev()
-            .map(|k| window[k].take().unwrap_or_else(|| Line::from("")))
-            .collect();
+        // window[0] is the bottom-most row (distance 0 from the tail).
+        let lines: Vec<Line> = if max_scroll == 0 {
+            // Everything fits: anchor to the TOP (oldest first), blanks BELOW —
+            // a short/near-empty log fills from the top like a normal terminal
+            // instead of clinging to the bottom with a blank void above it.
+            let mut v: Vec<Line> = (0..total)
+                .rev()
+                .map(|k| window[k].take().unwrap_or_else(|| Line::from("")))
+                .collect();
+            v.resize(pane_h, Line::from(""));
+            v
+        } else {
+            // Overflowing: follow the tail (newest at the bottom), filling the
+            // pane; blanks only where scrollback history runs out at the top.
+            (0..pane_h)
+                .rev()
+                .map(|k| window[k].take().unwrap_or_else(|| Line::from("")))
+                .collect()
+        };
         frame.render_widget(Paragraph::new(Text::from(lines)), body);
 
         // Scrollbar at the body's right edge, reflecting position in the range.
