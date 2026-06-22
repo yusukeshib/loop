@@ -198,6 +198,78 @@ pub fn cmd_kill(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `looop _ send <id> <text…> [--no-newline]` — type text into a worker's
+/// terminal as if a human were at the keyboard. A STEER verb: the human (or a
+/// concierge) nudges a stuck/interactive worker that's waiting on input. By
+/// default a trailing Enter is sent (the common "answer the prompt" case);
+/// `--no-newline` suppresses it (e.g. partial input). Refuses the pulse — the
+/// control loop is driven by goals/PLAYBOOK + asks, never raw keystrokes.
+pub fn cmd_send(paths: &Paths, args: &[String]) -> Result<ExitCode> {
+    let mut newline = true;
+    let mut rest: Vec<&String> = Vec::new();
+    for a in args {
+        match a.as_str() {
+            "--no-newline" | "-n" => newline = false,
+            _ => rest.push(a),
+        }
+    }
+    let Some((id, words)) = rest.split_first() else {
+        eprintln!("usage: looop _ send <id> <text…> [--no-newline]");
+        return Ok(ExitCode::from(1));
+    };
+    if words.is_empty() {
+        eprintln!("usage: looop _ send <id> <text…> [--no-newline]");
+        return Ok(ExitCode::from(1));
+    }
+    let session = full_session(id);
+    if reject_pulse(&session, "send") {
+        return Ok(ExitCode::from(1));
+    }
+    let text = words
+        .iter()
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    rt().block_on(
+        paths
+            .sessions()
+            .send(Some(session.clone()), text, newline, false),
+    )?;
+    println!("sent to {session}");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `looop _ screenshot <id> [--ansi|--json] [--no-trim]` — capture a session's
+/// current screen (the rendered terminal grid, not a frame-by-frame append).
+/// A read-only STEER verb usable on any session, including the pulse: it's how
+/// a human/concierge peeks at what a worker is showing right now without
+/// attaching. Falls back to the on-disk log render if the session isn't live.
+/// Defaults to plain text (cheapest for an LLM to read) with trailing blank
+/// rows trimmed.
+pub fn cmd_screenshot(paths: &Paths, args: &[String]) -> Result<ExitCode> {
+    use ::babysit::cli::ShotFormat;
+    let mut format = ShotFormat::Plain;
+    let mut trim = true;
+    let mut id = None;
+    for a in args {
+        match a.as_str() {
+            "--ansi" => format = ShotFormat::Ansi,
+            "--json" => format = ShotFormat::Json,
+            "--plain" => format = ShotFormat::Plain,
+            "--no-trim" => trim = false,
+            _ if id.is_none() => id = Some(a),
+            _ => {}
+        }
+    }
+    let Some(id) = id else {
+        eprintln!("usage: looop _ screenshot <id> [--ansi|--json] [--no-trim]");
+        return Ok(ExitCode::from(1));
+    };
+    let session = full_session(id);
+    rt().block_on(paths.sessions().screenshot(Some(session), format, trim))?;
+    Ok(ExitCode::SUCCESS)
+}
+
 // ============================================================================
 // Session fleet — the in-process adapter over the `babysit` library.
 // looop hands the library an explicit `Babysit` context (`paths.sessions()`),

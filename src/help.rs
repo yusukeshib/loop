@@ -34,6 +34,8 @@ Usage:
   looop _ goal write <id> [body|stdin] | _ goal archive <id>
   looop _ sensor write <name> [script|stdin]
   looop _ playbook write [body|stdin]
+  looop _ send <id> "<text>" [--no-newline]   type input into a worker's terminal
+  looop _ screenshot <id> [--ansi|--json] [--no-trim]   capture a session's screen
 
   WORKER self-callbacks (auto-injected CONTRACT — not for humans):
   looop _ ask <id> --prompt "…" [--ref P] [--options a,b]   ask + block for answer
