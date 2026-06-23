@@ -377,7 +377,8 @@ mod tests {
 
     #[test]
     fn write_atomic_replaces_existing_and_leaves_no_temp() {
-        let dir = std::env::temp_dir().join(format!("looop-wa-{}-{}", std::process::id(), now_unix()));
+        let dir =
+            std::env::temp_dir().join(format!("looop-wa-{}-{}", std::process::id(), now_unix()));
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("sub").join("goal.md");
         // Writes through a not-yet-existing parent dir.
