@@ -251,6 +251,33 @@ pub fn content_hash(input: &[u8]) -> String {
     format!("{h:032x}")
 }
 
+/// Atomically write `contents` to `path`: write a sibling temp file, fsync, then
+/// `rename` over the target. `rename(2)` on the same filesystem is atomic, so a
+/// concurrent reader (the pulse re-sensing each beat) never sees a half-written
+/// goal/PLAYBOOK/sensor — it sees either the old bytes or the new, never a torn
+/// truncation. This is what lets the contract's STEER verbs promise atomic
+/// writes that a raw `fs::write` (truncate-then-write) cannot.
+pub fn write_atomic(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    // Unique temp name in the SAME dir (so rename stays on one filesystem).
+    let pid = std::process::id();
+    let nonce = now_unix();
+    let stem = path.file_name().and_then(|s| s.to_str()).unwrap_or("tmp");
+    let tmp = dir.join(format!(".{stem}.{pid}.{nonce}.tmp"));
+    let res = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(contents)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
+}
+
 /// `command -v <cmd>` — true if found and executable on $PATH.
 pub fn on_path(cmd: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
@@ -347,6 +374,27 @@ impl Drop for Spinner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_atomic_replaces_existing_and_leaves_no_temp() {
+        let dir = std::env::temp_dir().join(format!("looop-wa-{}-{}", std::process::id(), now_unix()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("sub").join("goal.md");
+        // Writes through a not-yet-existing parent dir.
+        write_atomic(&target, b"first").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "first");
+        // Overwrites in place.
+        write_atomic(&target, b"second").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "second");
+        // No leftover temp siblings.
+        let leftovers: Vec<_> = std::fs::read_dir(target.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn json_event_line_is_valid_and_ordered() {

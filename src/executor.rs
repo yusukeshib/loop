@@ -7,7 +7,7 @@
 //!     action to `.decision.json`; [`consume_decision`] parses + executes it.
 //!     This is the primary driver — looop is the brain.
 //!   * MANUAL — the `looop _ …` verbs (cmd_goal/sensor/playbook/run/worker)
-//!     a human or concierge calls to steer by hand. Same [`Action`]s, same gates.
+//!     a human or client calls to steer by hand. Same [`Action`]s, same gates.
 //!
 //! looop is the SOLE executor either way: judgment (free to inspect) stays
 //! separate from EXECUTION (gated, logged), so risky moves can be checked.
@@ -225,10 +225,9 @@ fn execute_inner(paths: &Paths, action: &Action) -> Result<String> {
 
         Action::WriteGoal { id, body } => {
             safe_segment("goal", id)?;
-            fs::create_dir_all(paths.goals_dir())?;
-            fs::write(
-                paths.goals_dir().join(format!("{id}.md")),
-                with_trailing_newline(body),
+            crate::util::write_atomic(
+                &paths.goals_dir().join(format!("{id}.md")),
+                with_trailing_newline(body).as_bytes(),
             )?;
             Ok(format!("write-goal {id}"))
         }
@@ -245,9 +244,8 @@ fn execute_inner(paths: &Paths, action: &Action) -> Result<String> {
 
         Action::WriteSensor { name, script } => {
             safe_segment("sensor", name)?;
-            fs::create_dir_all(paths.sensors_dir())?;
             let p = paths.sensors_dir().join(format!("{name}.sh"));
-            fs::write(&p, with_trailing_newline(script))?;
+            crate::util::write_atomic(&p, with_trailing_newline(script).as_bytes())?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -259,7 +257,7 @@ fn execute_inner(paths: &Paths, action: &Action) -> Result<String> {
         }
 
         Action::WritePlaybook { body } => {
-            fs::write(paths.playbook(), with_trailing_newline(body))?;
+            crate::util::write_atomic(&paths.playbook(), with_trailing_newline(body).as_bytes())?;
             Ok("write-playbook".into())
         }
 
@@ -396,7 +394,7 @@ pub fn run_action(paths: &Paths, action: &Action, journal: Option<&str>) -> Resu
 }
 
 /// Resolve an action body from positional args, falling back to stdin when none
-/// are given (so a human/concierge can heredoc a multi-line goal/PLAYBOOK body).
+/// are given (so a human/client can heredoc a multi-line goal/PLAYBOOK body).
 fn body_or_stdin(rest: &[String]) -> Result<String> {
     if !rest.is_empty() {
         return Ok(rest.join(" "));

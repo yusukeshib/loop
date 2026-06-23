@@ -4,8 +4,8 @@
 //! the configured `tick` runner for ONE move, which looop executes through the
 //! typed [`crate::executor`] actions (RULE 1: one tick = one move). Judgment
 //! lives HERE, in looop; the human is a peer who steers by editing goals/PLAYBOOK
-//! and answers worker questions via the ask/answer mailbox (surfaced by the
-//! concierge — the human-facing interface agent, not a decision-maker).
+//! and answers worker questions via the ask/answer mailbox (surfaced by a
+//! client — the human-facing interface, not a decision-maker).
 //!
 //! It is a single-instance loop (flock) and the SOLE senser/decider, so two beats
 //! never wipe `snapshots/` or decide under each other. An unchanged world skips

@@ -539,7 +539,7 @@ pub fn state(paths: &Paths) -> serde_json::Value {
 
 /// Which kinds of change should make `_ wait` return. The diff is computed per
 /// category (see [`fingerprints`]) so a noisy snapshot-only move can be filtered
-/// out by a concierge that only cares about asks / journal progress.
+/// out by a client that only cares about asks / journal progress.
 #[derive(Clone, Copy)]
 enum WaitFilter {
     /// Wake on ANY category change (default — the historical behavior).
@@ -674,7 +674,7 @@ fn one_line(s: &str, max: usize) -> String {
 ///
 /// The plain summary is intentionally rich enough to STAND ALONE: pending asks
 /// (with age), the live worker fleet, each sensor's wake signal, and the last
-/// few journal lines — so a concierge woken by `_ wait` never has to follow up
+/// few journal lines — so a client woken by `_ wait` never has to follow up
 /// with `tail journal.md` / `_ state --json | jq` to see what actually moved.
 fn print_state(paths: &Paths, args: &[String], changed: Option<&[String]>) -> Result<ExitCode> {
     let mut s = state(paths);
@@ -730,7 +730,7 @@ fn print_state(paths: &Paths, args: &[String], changed: Option<&[String]>) -> Re
 
     // Sensor readings — one line per snapshot's wake SIGNAL. This is where a
     // user `gh`/PR-review sensor surfaces (e.g. a stale CHANGES_REQUESTED), so
-    // the concierge sees PR state in `_ state` instead of shelling out to `gh`.
+    // a client sees PR state in `_ state` instead of shelling out to `gh`.
     let snaps = s["snapshots"].as_object().cloned().unwrap_or_default();
     if !snaps.is_empty() {
         println!("sensors:");
@@ -785,7 +785,7 @@ pub fn cmd_state(paths: &Paths, args: &[String]) -> Result<ExitCode> {
 /// something to look at, then print the fresh state plus a `changed: […]` diff
 /// summary. By default any category move (asks / journal / playbook / goals /
 /// snapshots) wakes it; `--actionable` narrows to asks+journal and `--only-asks`
-/// to asks alone, so a watching concierge can ignore noisy snapshot-only moves.
+/// to asks alone, so a watching client can ignore noisy snapshot-only moves.
 pub fn cmd_wait(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     let _ = crate::seed::ensure_dirs(paths);
     let filter = if args.iter().any(|a| a == "--only-asks") {

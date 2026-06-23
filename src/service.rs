@@ -3,7 +3,7 @@
 //! `looop up` starts the PULSE: looop's detached, AUTONOMOUS loop — it senses,
 //! decides ONE move per changed beat, and runs the worker fleet. That is looop.
 //! You steer it by editing goals/PLAYBOOK and answering worker asks (optionally
-//! through a concierge — a pi/claude session you point at looop to watch + relay).
+//! through a client — e.g. a pi/claude session you point at looop to watch + relay).
 //! `looop down` stops the pulse and every live worker.
 
 use crate::paths::Paths;
@@ -14,7 +14,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 /// `looop up [--json]` — start the autonomous pulse (idempotent). looop runs
-/// itself from there; steer by editing goals/PLAYBOOK or run a concierge to watch
+/// itself from there; steer by editing goals/PLAYBOOK or run a client to watch
 /// and relay (`looop watch`, or a pi/claude session pointed at `looop _ state`).
 pub fn cmd_up(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     let mut json = false;

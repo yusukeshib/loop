@@ -28,9 +28,9 @@ Usage:
   looop config zsh|bash          print shell integration (completions)
   looop version | help           print version / show this help
 
-  STEER (you, or a concierge acting for you — looop does NOT need these to act):
+  STEER (the contract — driven by you or any client; looop does NOT need these to act):
   looop _ state [--json] | _ wait [--json] [--only-asks|--actionable]  read state
-  looop _ asks [--json]                      pending asks only (concierge's narrow view)
+  looop _ asks [--json]                      pending asks only (a client's narrow view)
   looop _ answer <ask_id> "<text>"|- [--force]  resolve a worker's ask (`-`/empty = stdin; --force to re-answer)
   looop _ goal write <id> [body|stdin] | _ goal archive <id>
   looop _ sensor write <name> [script|stdin]
@@ -50,8 +50,9 @@ Paths (override via env LOOOP_CONFIG / LOOOP_DATA_DIR):
 looop is a single self-contained binary: session management (babysit) is linked
 as a LIBRARY and driven entirely in-process — no `babysit` executable required.
 looop decides autonomously each beat and drives itself through the typed actions;
-the `_ …` verbs above are for YOU (or a concierge) to steer + answer asks, and the
-worker self-callbacks (ask / kill / claim / unclaim / cost) are auto-injected.
+the `_ …` verbs above are the contract YOU (or any client) drive to steer +
+answer asks; the worker self-callbacks (ask / kill / claim / unclaim / cost) are
+auto-injected.
 
 looop launches each worker in the data dir; a worker that touches code provisions
 its OWN sandbox (box if available, else git worktree). looop itself has no notion

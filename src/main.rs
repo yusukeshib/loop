@@ -76,7 +76,7 @@ fn main() -> ExitCode {
         // logs + lists sessions, never launches an agent.
         "watch" => watch::cmd_watch(&paths, rest),
         // Machine-facing verbs, grouped under `_`. Two audiences: STEER verbs
-        // (state/wait/answer/goal/sensor/playbook) the human or a concierge
+        // (state/wait/answer/goal/sensor/playbook) the human or any client
         // uses to inspect + steer + answer asks, and the WORKER self-callbacks
         // (ask/kill/claim/unclaim/cost). `_ pulse` is looop's own detached spawn.
         "_" => {

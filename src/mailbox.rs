@@ -3,9 +3,10 @@
 //! A worker that needs a decision only a HUMAN can make calls `looop _ ask <id>
 //! --prompt "…"`, which writes a durable question file under `asks/` and then
 //! BLOCKS until a matching `answers/` file appears, printing the answer to stdout.
-//! The human answers with `looop _ answer <ask_id> "…"` — directly, or through the
-//! concierge (a pi/claude session that surfaces pending asks and relays). looop's
-//! own decide loop sees pending asks in its prompt but does NOT answer them: they
+//! The human answers with `looop _ answer <ask_id> "…"` — directly, or through any
+//! client (a pi/claude session, a notify script, …) that surfaces pending asks and
+//! relays the reply. looop's own decide loop sees pending asks but does NOT answer
+//! them: they
 //! are the human's call.
 //!
 //! Why files (not stdin / a socket): durability + level-triggering (RULE 2).
@@ -79,8 +80,8 @@ fn read_answer(paths: &Paths, ask_id: &str) -> Option<String> {
 }
 
 /// All asks that have NO matching answer yet. Read-only; used by `_ state` and
-/// the decide prompt (so looop sees what's blocked) and by `looop watch`/the
-/// concierge (so the human sees what's waiting on them).
+/// the decide prompt (so looop sees what's blocked) and by `looop watch` / any
+/// client (so the human sees what's waiting on them).
 pub fn pending(paths: &Paths) -> Vec<Ask> {
     let mut out = Vec::new();
     for e in fs::read_dir(paths.asks_dir())
@@ -164,8 +165,8 @@ pub fn cmd_ask(paths: &Paths, args: &[String]) -> Result<ExitCode> {
         ],
     );
 
-    // Block until answered. The human sees this ask (via `looop watch` / the
-    // concierge / `looop _ state`) and replies with `looop _ answer`.
+    // Block until answered. The human sees this ask (via `looop watch` / a
+    // client / `looop _ state`) and replies with `looop _ answer`.
     // (the pulse keeps the world fresh) and replies via `looop _ answer <id>`.
     let poll = Duration::from_millis(
         std::env::var("LOOOP_ASK_POLL_MS")
@@ -237,10 +238,10 @@ pub fn cmd_answer(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `looop _ asks [--json]` — the concierge's narrow view: ONLY the pending asks,
+/// `looop _ asks [--json]` — a client's narrow view: ONLY the pending asks,
 /// not the full `_ state` dump (snapshots / journal / fleet). Plain output is a
-/// compact list; `--json` emits the array of ask objects. The concierge's main
-/// job is relaying asks, so this makes that a single cheap call.
+/// compact list; `--json` emits the array of ask objects. A client's main job is
+/// relaying asks, so this makes that a single cheap call.
 pub fn cmd_asks(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     let _ = crate::seed::ensure_dirs(paths);
     let asks = pending(paths);
