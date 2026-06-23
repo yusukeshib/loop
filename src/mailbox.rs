@@ -14,9 +14,9 @@
 //! for a head-less worker that can't sit at a tmux prompt.
 
 use crate::paths::Paths;
+use crate::store::{Collection, FileStore, Key, StateStore};
 use crate::util;
 use anyhow::{Context, Result, bail};
-use std::fs;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -56,13 +56,11 @@ fn safe(seg: &str) -> Result<()> {
 /// Allocate the next ask id for a worker: `<worker>-<n>` where `n` is one past
 /// the highest existing index across BOTH asks/ and answers/ (so an answered
 /// ask's id is never reused while its record lingers).
-fn next_ask_id(paths: &Paths, worker: &str) -> String {
+fn next_ask_id(store: &impl StateStore, worker: &str) -> String {
     let mut max = 0u64;
-    for dir in [paths.asks_dir(), paths.answers_dir()] {
-        for e in fs::read_dir(&dir).into_iter().flatten().flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            if let Some(stem) = name.strip_suffix(".json")
-                && let Some(idx) = stem.strip_prefix(&format!("{worker}-"))
+    for coll in [Collection::Asks, Collection::Answers] {
+        for stem in store.list(&coll) {
+            if let Some(idx) = stem.strip_prefix(&format!("{worker}-"))
                 && let Ok(n) = idx.parse::<u64>()
             {
                 max = max.max(n);
@@ -73,8 +71,8 @@ fn next_ask_id(paths: &Paths, worker: &str) -> String {
 }
 
 /// Read the answer text for an ask id, if it has been answered.
-fn read_answer(paths: &Paths, ask_id: &str) -> Option<String> {
-    let raw = fs::read_to_string(paths.answers_dir().join(format!("{ask_id}.json"))).ok()?;
+fn read_answer(store: &impl StateStore, ask_id: &str) -> Option<String> {
+    let raw = store.read(&Key::Answer(ask_id.to_string()))?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
     v.get("answer").and_then(|x| x.as_str()).map(str::to_owned)
 }
@@ -83,17 +81,12 @@ fn read_answer(paths: &Paths, ask_id: &str) -> Option<String> {
 /// the decide prompt (so looop sees what's blocked) and by `looop watch` / any
 /// client (so the human sees what's waiting on them).
 pub fn pending(paths: &Paths) -> Vec<Ask> {
+    let store = FileStore::new(paths);
     let mut out = Vec::new();
-    for e in fs::read_dir(paths.asks_dir())
-        .into_iter()
-        .flatten()
-        .flatten()
-    {
-        let p = e.path();
-        if p.extension().map(|x| x == "json").unwrap_or(false)
-            && let Ok(raw) = fs::read_to_string(&p)
+    for id in store.list(&Collection::Asks) {
+        if let Some(raw) = store.read(&Key::Ask(id.clone()))
             && let Ok(ask) = serde_json::from_str::<Ask>(&raw)
-            && read_answer(paths, &ask.id).is_none()
+            && read_answer(&store, &ask.id).is_none()
         {
             out.push(ask);
         }
@@ -140,9 +133,8 @@ pub fn cmd_ask(paths: &Paths, args: &[String]) -> Result<ExitCode> {
         bail!("ask: empty --prompt");
     }
 
-    fs::create_dir_all(paths.asks_dir())?;
-    fs::create_dir_all(paths.answers_dir())?;
-    let id = next_ask_id(paths, &worker);
+    let store = FileStore::new(paths);
+    let id = next_ask_id(&store, &worker);
     let ask = Ask {
         id: id.clone(),
         worker: worker.clone(),
@@ -151,10 +143,7 @@ pub fn cmd_ask(paths: &Paths, args: &[String]) -> Result<ExitCode> {
         options,
         ts: util::now_unix(),
     };
-    fs::write(
-        paths.asks_dir().join(format!("{id}.json")),
-        serde_json::to_string_pretty(&ask)?,
-    )?;
+    store.write_atomic(&Key::Ask(id.clone()), &serde_json::to_string_pretty(&ask)?)?;
     util::event(
         util::Level::Step,
         "ask",
@@ -175,7 +164,7 @@ pub fn cmd_ask(paths: &Paths, args: &[String]) -> Result<ExitCode> {
             .unwrap_or(1000),
     );
     loop {
-        if let Some(answer) = read_answer(paths, &id) {
+        if let Some(answer) = read_answer(&store, &id) {
             println!("{answer}");
             return Ok(ExitCode::SUCCESS);
         }
@@ -216,19 +205,21 @@ pub fn cmd_answer(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     if text.trim().is_empty() {
         bail!("answer: empty text");
     }
-    if !paths.asks_dir().join(format!("{ask_id}.json")).is_file() {
+    let store = FileStore::new(paths);
+    if !store.exists(&Key::Ask(ask_id.clone())) {
         bail!("answer: no pending ask {ask_id:?}");
     }
-    fs::create_dir_all(paths.answers_dir())?;
-    let answer_path = paths.answers_dir().join(format!("{ask_id}.json"));
     // Answers are durable: refuse to clobber one already given unless `--force`.
     // A worker that has already read its answer has moved on, so a stray re-answer
     // is almost always a misfire — fail loudly instead of silently overwriting.
-    if answer_path.is_file() && !force {
+    if store.exists(&Key::Answer(ask_id.clone())) && !force {
         bail!("answer: {ask_id:?} is already answered (pass --force to overwrite)");
     }
     let body = serde_json::json!({ "answer": text, "ts": util::now_unix() });
-    fs::write(&answer_path, serde_json::to_string_pretty(&body)?)?;
+    store.write_atomic(
+        &Key::Answer(ask_id.clone()),
+        &serde_json::to_string_pretty(&body)?,
+    )?;
     util::event(
         util::Level::Ok,
         "answer",
@@ -275,14 +266,16 @@ pub fn cmd_asks(paths: &Paths, args: &[String]) -> Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn ask_ids_increment_and_pending_excludes_answered() {
         let p = Paths::temp();
+        let store = FileStore::new(&p);
         fs::create_dir_all(p.asks_dir()).unwrap();
         fs::create_dir_all(p.answers_dir()).unwrap();
 
-        assert_eq!(next_ask_id(&p, "triage"), "triage-1");
+        assert_eq!(next_ask_id(&store, "triage"), "triage-1");
         let a = Ask {
             id: "triage-1".into(),
             worker: "triage".into(),
@@ -297,14 +290,14 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(next_ask_id(&p, "triage"), "triage-2");
+        assert_eq!(next_ask_id(&store, "triage"), "triage-2");
         assert_eq!(pending(&p).len(), 1, "unanswered ask is pending");
 
         // Answering it removes it from pending but keeps the id reserved.
         cmd_answer(&p, &["triage-1".into(), "yes".into()]).unwrap();
         assert!(pending(&p).is_empty(), "answered ask is not pending");
-        assert_eq!(read_answer(&p, "triage-1").as_deref(), Some("yes"));
-        assert_eq!(next_ask_id(&p, "triage"), "triage-2");
+        assert_eq!(read_answer(&store, "triage-1").as_deref(), Some("yes"));
+        assert_eq!(next_ask_id(&store, "triage"), "triage-2");
     }
 
     #[test]
@@ -327,10 +320,16 @@ mod tests {
         cmd_answer(&p, &["w-1".into(), "first".into()]).unwrap();
         // A bare re-answer is refused (a stray re-answer is almost always a misfire).
         assert!(cmd_answer(&p, &["w-1".into(), "second".into()]).is_err());
-        assert_eq!(read_answer(&p, "w-1").as_deref(), Some("first"));
+        assert_eq!(
+            read_answer(&FileStore::new(&p), "w-1").as_deref(),
+            Some("first")
+        );
         // `--force` lets the human deliberately recover from a bad answer.
         cmd_answer(&p, &["w-1".into(), "second".into(), "--force".into()]).unwrap();
-        assert_eq!(read_answer(&p, "w-1").as_deref(), Some("second"));
+        assert_eq!(
+            read_answer(&FileStore::new(&p), "w-1").as_deref(),
+            Some("second")
+        );
     }
 
     #[test]
