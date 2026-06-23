@@ -7,6 +7,7 @@
 
 use crate::paths::Paths;
 use crate::session;
+use crate::store::StateStore;
 use crate::util::{self, Level};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -231,24 +232,13 @@ fn sys_sessions(paths: &Paths) -> serde_json::Value {
 /// set IS the wake SIGNAL: a worker taking or releasing a task is a real
 /// transition the decider may react to.
 fn sys_claims(paths: &Paths) -> serde_json::Value {
-    let mut entries: Vec<PathBuf> = fs::read_dir(paths.claims_dir())
+    let store = crate::store::FileStore::new(paths);
+    let leases: Vec<serde_json::Value> = store
+        .list(&crate::store::Collection::Claims)
         .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().map(|e| e == "json").unwrap_or(false))
-        .collect();
-    entries.sort();
-    let leases: Vec<serde_json::Value> = entries
-        .iter()
-        .map(|cf| {
-            let name = cf
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let claim: serde_json::Value = fs::read_to_string(cf)
-                .ok()
+        .map(|name| {
+            let claim: serde_json::Value = store
+                .read(&crate::store::Key::Claim(name.clone()))
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or(serde_json::Value::Null);
             serde_json::json!({ "name": name, "claim": claim })

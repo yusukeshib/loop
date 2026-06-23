@@ -11,10 +11,9 @@
 use crate::events;
 use crate::paths::Paths;
 use crate::session;
+use crate::store::{Collection, FileStore, Key, StateStore};
 use crate::util;
 use anyhow::{Result, bail};
-use std::fs;
-use std::io::Write;
 use std::process::ExitCode;
 
 /// Reject a claim name that could escape claims/ or hit a dotfile.
@@ -28,6 +27,15 @@ fn safe_name(name: &str) -> Result<()> {
         bail!("invalid claim name {name:?}");
     }
     Ok(())
+}
+
+/// The `.session` recorded in a claim, or empty if absent/unparseable.
+fn claim_holder(store: &impl StateStore, key: &Key) -> String {
+    store
+        .read(key)
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("session").and_then(|x| x.as_str()).map(str::to_owned))
+        .unwrap_or_default()
 }
 
 /// The session that should own a claim: explicit `--session <id>`, else the
@@ -67,43 +75,29 @@ pub fn cmd_claim(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     let name = claim_positional(args);
     safe_name(&name)?;
     let session = claim_session(args);
-    let dir = paths.claims_dir();
-    fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{name}.json"));
+    let store = FileStore::new(paths);
+    let key = Key::Claim(name.clone());
     let body = serde_json::json!({ "session": session, "name": name }).to_string();
 
-    // Retry a bounded number of times: each iteration is one atomic create_new;
-    // a stale lease is removed and the create retried (the loop only re-runs when
-    // we reclaimed a dead holder, so it terminates).
+    // Retry a bounded number of times: each iteration is one atomic create-if-absent
+    // (O_EXCL via the store); a stale lease is removed and the create retried (the
+    // loop only re-runs when we reclaimed a dead holder, so it terminates).
     for _ in 0..8 {
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut f) => {
-                writeln!(f, "{body}")?;
-                println!("claimed {name}");
-                return Ok(ExitCode::SUCCESS);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let holder = fs::read_to_string(&path)
-                    .ok()
-                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                    .and_then(|v| v.get("session").and_then(|x| x.as_str()).map(str::to_owned))
-                    .unwrap_or_default();
-                if !holder.is_empty() && holder == session {
-                    return Ok(ExitCode::SUCCESS); // idempotent: we already own it
-                }
-                if !holder.is_empty() && session::is_alive(paths, &holder) {
-                    eprintln!("claim {name}: held by live session '{holder}'");
-                    return Ok(ExitCode::from(1));
-                }
-                // Stale (holder empty or dead): reclaim and retry the atomic create.
-                let _ = fs::remove_file(&path);
-            }
-            Err(e) => return Err(e.into()),
+        if store.create_exclusive(&key, &body)? {
+            println!("claimed {name}");
+            return Ok(ExitCode::SUCCESS);
         }
+        // Already held: inspect the holder to decide own / live / reclaim.
+        let holder = claim_holder(&store, &key);
+        if !holder.is_empty() && holder == session {
+            return Ok(ExitCode::SUCCESS); // idempotent: we already own it
+        }
+        if !holder.is_empty() && session::is_alive(paths, &holder) {
+            eprintln!("claim {name}: held by live session '{holder}'");
+            return Ok(ExitCode::from(1));
+        }
+        // Stale (holder empty or dead): reclaim and retry the atomic create.
+        let _ = store.remove(&key);
     }
     bail!("claim {name}: contention reclaiming a stale lease");
 }
@@ -115,17 +109,14 @@ pub fn cmd_unclaim(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     let name = claim_positional(args);
     safe_name(&name)?;
     let session = claim_session(args);
-    let path = paths.claims_dir().join(format!("{name}.json"));
-    if !path.exists() {
+    let store = FileStore::new(paths);
+    let key = Key::Claim(name.clone());
+    if !store.exists(&key) {
         return Ok(ExitCode::SUCCESS); // already released (idempotent)
     }
-    let holder = fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v.get("session").and_then(|x| x.as_str()).map(str::to_owned))
-        .unwrap_or_default();
+    let holder = claim_holder(&store, &key);
     if holder.is_empty() || holder == session || !session::is_alive(paths, &holder) {
-        fs::remove_file(&path)?;
+        store.remove(&key)?;
         return Ok(ExitCode::SUCCESS);
     }
     eprintln!("unclaim {name}: held by another live session '{holder}'");
@@ -135,33 +126,18 @@ pub fn cmd_unclaim(paths: &Paths, args: &[String]) -> Result<ExitCode> {
 /// Reap claims/<name>.json whose `.session` is no longer alive. Never interprets
 /// the claim body — ownership semantics live in the PLAYBOOK.
 pub fn reap_stale_claims(paths: &Paths) {
-    let dir = paths.claims_dir();
-    if !dir.is_dir() {
-        return;
-    }
+    let store = FileStore::new(paths);
     let alive: Vec<String> = session::list(paths)
         .into_iter()
         .filter(|s| s.alive)
         .map(|s| s.id)
         .collect();
 
-    for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
-        let cf = entry.path();
-        if cf.extension().map(|e| e != "json").unwrap_or(true) {
-            continue;
-        }
-        let sess = fs::read_to_string(&cf)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| v.get("session").and_then(|x| x.as_str()).map(str::to_owned))
-            .unwrap_or_default();
+    for name in store.list(&Collection::Claims) {
+        let key = Key::Claim(name.clone());
+        let sess = claim_holder(&store, &key);
         if sess.is_empty() || !alive.iter().any(|a| a == &sess) {
-            let _ = fs::remove_file(&cf);
-            let name = cf
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
+            let _ = store.remove(&key);
             util::event(
                 util::Level::Info,
                 "claim.reaped",
@@ -186,6 +162,7 @@ pub fn reap_stale_claims(paths: &Paths) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn args(name: &str, sess: &str) -> Vec<String> {
         vec![name.into(), "--session".into(), sess.into()]

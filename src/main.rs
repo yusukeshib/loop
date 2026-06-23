@@ -26,6 +26,7 @@ mod seed;
 mod sensor;
 mod service;
 mod session;
+mod store;
 mod tick;
 mod util;
 mod watch;
