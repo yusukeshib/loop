@@ -138,7 +138,11 @@ fn dispatch(paths: &Paths, cmd: Option<cli::Cmd>) -> Result<ExitCode> {
                 }
             }),
             Verb::Sensor(a) => gated(&|| {
-                let SensorOp::Write { name, script, journal } = &a.op;
+                let SensorOp::Write {
+                    name,
+                    script,
+                    journal,
+                } = &a.op;
                 executor::write_sensor(paths, name, script, journal.journal.as_deref())
             }),
             Verb::Playbook(a) => gated(&|| {
@@ -147,9 +151,11 @@ fn dispatch(paths: &Paths, cmd: Option<cli::Cmd>) -> Result<ExitCode> {
             }),
             Verb::Run(a) => gated(&|| executor::cmd_run(paths, &a)),
             Verb::Worker(a) => gated(&|| match &a.op {
-                WorkerOp::Start { id, prompt, journal } => {
-                    executor::start_worker(paths, id, prompt, journal.journal.as_deref())
-                }
+                WorkerOp::Start {
+                    id,
+                    prompt,
+                    journal,
+                } => executor::start_worker(paths, id, prompt, journal.journal.as_deref()),
                 WorkerOp::Kill { id } => session::cmd_kill(paths, id),
             }),
             Verb::Ask(a) => gated(&|| mailbox::cmd_ask(paths, &a)),

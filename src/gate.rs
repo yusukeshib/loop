@@ -213,7 +213,10 @@ mod tests {
         let p = Paths::temp();
         // `claim --session w1 repo-q` must claim repo-q, not "w1" (clap binds the
         // positional `name` distinctly from the `--session` value).
-        assert_eq!(cmd_claim(&p, &args("repo-q", "w1")).unwrap(), ExitCode::SUCCESS);
+        assert_eq!(
+            cmd_claim(&p, &args("repo-q", "w1")).unwrap(),
+            ExitCode::SUCCESS
+        );
         assert!(p.claims_dir().join("repo-q.json").is_file());
         assert!(!p.claims_dir().join("w1.json").exists());
     }
