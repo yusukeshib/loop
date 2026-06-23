@@ -255,22 +255,15 @@ fn sys_claims(paths: &Paths) -> serde_json::Value {
 /// goal SET already wakes it via goals/*.md). When awake for other reasons, the
 /// decider sees which goals it has been neglecting.
 fn sys_goals(paths: &Paths) -> serde_json::Value {
-    let activity: serde_json::Map<String, serde_json::Value> =
-        fs::read_to_string(paths.goal_activity())
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+    let store = crate::store::FileStore::new(paths);
+    let activity: serde_json::Map<String, serde_json::Value> = store
+        .read(&crate::store::Key::GoalActivity)
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
     let now = util::now_unix();
 
-    let mut ids: Vec<String> = fs::read_dir(paths.goals_dir())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().map(|x| x == "md").unwrap_or(false))
-        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-        .collect();
-    ids.sort();
+    // store.list is already sorted.
+    let ids: Vec<String> = store.list(&crate::store::Collection::Goals);
 
     let mut goals = serde_json::Map::new();
     for id in ids {

@@ -8,6 +8,7 @@
 
 use crate::config;
 use crate::paths::Paths;
+use crate::store::{FileStore, Key, StateStore};
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
@@ -78,27 +79,14 @@ pub fn ensure_dirs(paths: &Paths) -> Result<()> {
 
 /// Write the embedded starter seed once.
 fn seed_data(paths: &Paths) -> Result<()> {
-    fs::write(paths.playbook(), SEED_PLAYBOOK)?;
-    fs::write(paths.goals_dir().join("setup.md"), SEED_GOAL_SETUP)?;
-    fs::write(
-        paths.goals_dir().join("playbook-daily.md"),
+    let store = FileStore::new(paths);
+    store.write_atomic(&Key::Playbook, SEED_PLAYBOOK)?;
+    store.write_atomic(&Key::Goal("setup".into()), SEED_GOAL_SETUP)?;
+    store.write_atomic(
+        &Key::Goal("playbook-daily".into()),
         SEED_GOAL_PLAYBOOK_DAILY,
     )?;
-    let sensor = paths.sensors_dir().join("today.sh");
-    fs::write(&sensor, SEED_SENSOR_TODAY)?;
-    make_executable(&sensor)?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn make_executable(p: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perm = fs::metadata(p)?.permissions();
-    perm.set_mode(0o755);
-    fs::set_permissions(p, perm)?;
-    Ok(())
-}
-#[cfg(not(unix))]
-fn make_executable(_p: &Path) -> Result<()> {
+    // write_atomic sets the sensor's exec bit (it's a script the runtime runs).
+    store.write_atomic(&Key::Sensor("today".into()), SEED_SENSOR_TODAY)?;
     Ok(())
 }
