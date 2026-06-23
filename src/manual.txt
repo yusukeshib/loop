@@ -110,9 +110,9 @@ embedded DB, or anything else. A client does FOUR things:
      Push once per ask; escalate on age. Route by urgency: desktop/digest for
      low, chat for normal, SMS/voice for irreversible.
 
-  BUILD AN AGENT CLIENT — a pi/claude session pointed at looop: have it `_ wait`,
-  relay pending asks to you in plain language, `_ answer` your reply, and edit
-  goals/PLAYBOOK via the write verbs. It interfaces; looop decides.
+  BUILD AN AGENT CLIENT (a "concierge") — a pi/claude session pointed at looop:
+  have it `_ wait`, relay pending asks to you in plain language, `_ answer` your
+  reply, and edit goals/PLAYBOOK via the write verbs. It interfaces; looop decides.
 
 WORKER CONTRACT (auto-injected into every worker — for reference)
   A worker that needs a human decision runs ONE blocking call and waits:
