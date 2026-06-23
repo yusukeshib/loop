@@ -30,8 +30,8 @@ conflict, and no move — including write_playbook — can remove or weaken them
    goals/ and sensors/, and only via the typed actions below — never by editing
    files directly.
 4. ASK, DON'T GUESS: when you lack the information or authority to choose safely,
-   surface it through a worker that runs `looop _ ask` (the human answers via the
-   concierge) rather than guess. Asking is cheaper than a wrong irreversible move.
+   surface it through a worker that runs `looop _ ask` (the human answers it)
+   rather than guess. Asking is cheaper than a wrong irreversible move.
 5. write_playbook may tune priorities and add rules, but MUST keep these five
    norms intact. The PLAYBOOK refines judgment beneath them; it never overrides
    them.
@@ -100,9 +100,10 @@ Every action ALSO takes:
      an unchanged world otherwise skips the AI entirely.
 
 PENDING ASKS are workers BLOCKED waiting for a HUMAN answer (via `looop _ ask`).
-They are NOT yours to answer — the human answers them through the concierge. Do
-not re-dispatch or duplicate work a worker is already blocked on; surfacing a
-blocker to the human is the concierge's job, not a duplicate worker's.
+They are NOT yours to answer — the human answers them (out of band, through
+whatever client they run). Do not re-dispatch or duplicate work a worker is
+already blocked on; surfacing a blocker to the human happens outside looop, not
+via a duplicate worker.
 
 Two of the SENSOR READINGS are looop's OWN state (system sensors, not
 sensors/*.sh):

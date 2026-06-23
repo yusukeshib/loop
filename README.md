@@ -9,22 +9,31 @@ spawning worker agents for hands-on work. The **judgment lives inside looop** (a
 small, gated LLM call per beat); looop is the brain.
 
 You are a peer, not the driver: you steer by editing goals / the PLAYBOOK, and a
-worker that hits a decision only a human can make asks you and waits. To watch and
-steer in plain language you can run a **concierge** — a pi/claude session pointed
-at looop that reads its state and relays — but looop runs fine without one. One
-self-contained binary, no database, no server.
+worker that hits a decision only a human can make asks you and waits. You reach
+looop through a **client** — anything that drives looop's contract verbs for you.
+The thinnest client is a bare terminal (`looop _ …`); richer ones are an **agent
+client** (a pi/claude session you talk to in plain language) or a **notify client**
+(a script that pushes pending asks to Slack/SMS/desktop and relays your reply).
+looop runs fine with no long-running client at all. One self-contained binary, no
+database, no server.
+
+**Three layers.** `core` is the autonomous pulse + the state behind it (file-based
+today — an implementation detail). The **contract** — the `looop _ …` verbs — is
+the one supported surface to read and steer core; it is the stable boundary, not
+the file layout. A **client** drives that contract for you. The human reaches core
+only through the contract, so swapping the backend never touches a client.
 
 ![looop running a tick](demo.png)
 
 ## How it works
 
-looop is the brain; workers are the hands; you (optionally via a concierge) are
-the peer who shapes goals and answers what only a human can.
+looop is the brain; workers are the hands; you (through a client) are the peer who
+shapes goals and answers what only a human can.
 
 ```
-   pulse (looop — autonomous)              workers            concierge (optional)
-   ──────────────────────────             ───────            ────────────────────
-   each beat: sense the world,            real agents        a pi/claude YOU run:
+   pulse (looop — autonomous)              workers            client (optional)
+   ──────────────────────────             ───────            ─────────────────
+   each beat: sense the world,            real agents        drives the contract:
    if it changed → decide ONE     ──▶     doing multi-       reads `looop _ state`,
    move → execute it (gated)              step work          relays asks to you,
    (skips the LLM if unchanged)           `ask` + wait  ──▶  helps you edit goals
@@ -48,7 +57,7 @@ pulse just re-reads the unanswered asks on restart.
 
 The human-in-the-loop path is a durable **mailbox**, not a tmux prompt: a worker
 that needs a decision runs one blocking `looop _ ask …` and waits; you answer with
-`looop _ answer` (directly or through the concierge). No attach, no stdin
+`looop _ answer` (directly, or through any client). No attach, no stdin
 wrangling — it works for headless workers.
 
 ## Concepts
@@ -73,30 +82,38 @@ nothing about repos.
 **Humans in the loop.** looop decides on its own — you shape WHAT it pursues by
 editing goals / the PLAYBOOK (it observes the change next beat). A worker that
 needs a decision only a human can make runs `looop _ ask` and blocks; you answer
-with `looop _ answer` — directly, or through a **concierge** (a pi/claude session
-you point at looop that surfaces pending asks and helps you edit goals). The
-concierge is an interface, not a decision-maker. Irreversible actions (merges,
-deploys, deletes) always require your explicit approval via an ask.
+with `looop _ answer` — directly, or through a **client**. A client is anything
+that drives the contract for you and surfaces pending asks: a bare terminal, an
+agent client (a pi/claude session you talk to), or a notify client (pushes asks to
+Slack/SMS/desktop). A client is an interface, not a decision-maker — core knows
+nothing about any particular one. Irreversible actions (merges, deploys, deletes)
+always require your explicit approval via an ask; never auto-answer them.
+
+**The contract is the boundary.** Steer through the verbs (`looop _ goal write`,
+`_ playbook write`, `_ answer`) — they are validated, journaled, and atomic. The
+file layout above is the current backend, reached *through* the contract, not a
+public interface: editing a goal/PLAYBOOK file by hand still works and is seen
+next beat, but skips the journal entry — an escape hatch, not the steering surface.
 
 ## Quick start
 
 ```sh
 looop up            # start the autonomous pulse (sense + decide + run workers), detached
 looop watch         # (optional) live colored log + running-session selector
-# (optional) run a concierge to watch + steer in plain language:
-pi                  # then say: "be my looop concierge — show me `looop _ state`,
+# (optional) run an agent client to watch + steer in plain language:
+pi                  # then say: "be my looop client — show me `looop _ state`,
                     #            relay pending asks, help me edit goals; read `looop --help`"
 looop down          # stop the pulse and all workers
 ```
 
 `looop up` starts the autonomous pulse — looop runs itself from there. You steer
-by editing goals/PLAYBOOK and answering asks (`looop _ answer`); the concierge is
+through the contract verbs (`looop _ goal write`, `_ answer`); an agent client is
 optional sugar for doing that in chat. `looop up --json` makes the pulse log
 machine-readable NDJSON.
 
 On the first run looop seeds a starter PLAYBOOK and a `setup` goal whose only job
-is to **invite you to configure it** (a journal note the concierge relays) — run a
-concierge (or edit goals/PLAYBOOK directly) to replace the starter with your real
+is to **invite you to configure it** (a journal note a client surfaces) — run a
+client (or edit goals/PLAYBOOK directly) to replace the starter with your real
 work. After that it just runs.
 
 ## Commands
@@ -110,12 +127,12 @@ looop cost [today|all|--json]  report LLM spend (per-beat decide + workers)
 looop config zsh|bash          print shell integration (tab completions)
 looop version | help           (looop help = the full design manual)
 
-# STEER (you, or a concierge acting for you — looop does NOT need these to act)
+# STEER (the contract — driven by you or any client; looop does NOT need these to act)
 looop _ state [--json]                     read current world state
 looop _ wait [--json] [--only-asks|--actionable]   block until change; prints a
                                            `changed: […]` diff (--actionable =
                                            asks/journal only, --only-asks = asks)
-looop _ asks [--json]                      pending asks only (concierge's narrow view)
+looop _ asks [--json]                      pending asks only (a client's narrow view)
 looop _ answer <ask_id> "<text>"|- [--force]  resolve an ask (`-`/empty body = stdin/heredoc; --force to overwrite an already-answered ask)
 looop _ goal write <id> [body|stdin] | _ goal archive <id>
 looop _ sensor write <name> [script|stdin] | _ playbook write [body|stdin]
@@ -126,8 +143,8 @@ looop _ kill <id> | _ claim <name> | _ unclaim <name> | _ cost <…>
 ```
 
 The human surface is tiny — essentially `up`/`down`/`watch` (plus `cost`/`config`).
-looop decides autonomously; the `looop _ …` STEER verbs let you (or a concierge)
-inspect state, answer asks, and edit goals/sensors/PLAYBOOK by hand, and
+looop decides autonomously; the `looop _ …` STEER verbs are the contract you (or
+any client) drive to inspect state, answer asks, and edit goals/sensors/PLAYBOOK, and
 **workers** self-report (ask, kill, claim, unclaim, cost) via the auto-injected
 contract.
 
@@ -149,7 +166,7 @@ Split the JSON into two keys:
 
 ### Example: a GitHub PR-review sensor
 
-Surface stale `CHANGES_REQUESTED` PRs so looop (and the concierge via `_ state`)
+Surface stale `CHANGES_REQUESTED` PRs so looop (and a client via `_ state`)
 sees review state without anyone shelling out to `gh`:
 
 ```sh

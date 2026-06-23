@@ -19,8 +19,8 @@ fn shell_quote(s: &str) -> String {
 
 const CONTRACT: &str = r#"# ⚑ WORKER CONTRACT (auto-injected — must obey)
 - Never send notifications (no terminal-notifier or any OS notification). You are
-  an agent; surface anything a human must see by ASKing (below) — the concierge
-  relays it.
+  an agent; surface anything a human must see by ASKing (below) — the human sees
+  it through whatever client they run.
 - When you need a human decision / info / approval, do NOT guess — ASK and WAIT.
   This ONE command writes your question to the mailbox and BLOCKS until the root
   agent (or human) answers, printing the answer to stdout:
@@ -199,8 +199,8 @@ pub fn cmd_kill(paths: &Paths, args: &[String]) -> Result<ExitCode> {
 }
 
 /// `looop _ send <id> <text…> [--no-newline]` — type text into a worker's
-/// terminal as if a human were at the keyboard. A STEER verb: the human (or a
-/// concierge) nudges a stuck/interactive worker that's waiting on input. By
+/// terminal as if a human were at the keyboard. A STEER verb: the human (or any
+/// client) nudges a stuck/interactive worker that's waiting on input. By
 /// default a trailing Enter is sent (the common "answer the prompt" case);
 /// `--no-newline` suppresses it (e.g. partial input). Refuses the pulse — the
 /// control loop is driven by goals/PLAYBOOK + asks, never raw keystrokes.
@@ -242,7 +242,7 @@ pub fn cmd_send(paths: &Paths, args: &[String]) -> Result<ExitCode> {
 /// `looop _ screenshot <id> [--ansi|--json] [--no-trim]` — capture a session's
 /// current screen (the rendered terminal grid, not a frame-by-frame append).
 /// A read-only STEER verb usable on any session, including the pulse: it's how
-/// a human/concierge peeks at what a worker is showing right now without
+/// a human (or any client) peeks at what a worker is showing right now without
 /// attaching. Falls back to the on-disk log render if the session isn't live.
 /// Defaults to plain text (cheapest for an LLM to read) with trailing blank
 /// rows trimmed.

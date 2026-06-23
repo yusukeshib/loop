@@ -11,30 +11,47 @@ THE IDEA
 
   You are a PEER, not the driver. You steer by editing goals / the PLAYBOOK
   (looop observes them next beat); a worker that hits a decision only a human can
-  make asks you and waits. To watch and steer in plain language you can run a
-  CONCIERGE — a pi/claude session pointed at looop that reads its state, relays
-  worker questions to you, and helps you edit goals/answer. The concierge is an
-  INTERFACE, not a decision-maker: looop decides, the concierge just talks.
+  make asks you and waits. You reach looop through a CLIENT — anything that
+  drives the contract verbs below on your behalf: a bare terminal (you, typing
+  `looop _ …`), an AGENT client (a pi/claude session you talk to in plain
+  language, which reads state, relays asks, and edits goals for you), or a NOTIFY
+  client (a script that pushes pending asks to Slack/SMS/desktop and relays your
+  reply back). A client is an INTERFACE, not a decision-maker: looop decides,
+  the client just talks. core knows nothing about any particular client.
 
     role          who                   what it does
     ----          ---                   ------------
     judgment      the pulse (looop)      sense every beat; decide + execute ONE move
     hands         worker sessions        real agents doing multi-step work; when they
                                          need a human decision they `ask` and wait
-    interface     the concierge          OPTIONAL human-facing pi/claude: read state,
-                  (a pi/claude YOU run)   relay asks, help you steer — never decides
-    memory        the data dir           PLAYBOOK + goals + journal + mailbox = files
+    interface     a client               OPTIONAL: drives the contract for you — read
+                  (you run it)           state, relay asks, steer. Never decides.
+    memory        core (the backend)     PLAYBOOK + goals + journal + mailbox state
+
+THREE LAYERS
+  core      the autonomous pulse + the durable state behind it. Decides + acts.
+            State is held in a file-based backend today; that is an
+            implementation detail you never address directly.
+  contract  the `looop _ …` verbs. The ONE supported surface to read + steer
+            core. This — not the backend layout — is the stable boundary. The
+            `_ ` prefix marks the plumbing surface (the contract a client drives);
+            the bare commands (`up` / `down` / `watch` / `cost`) are the porcelain
+            a human runs by hand.
+  client    anything that drives the contract for a human. The human reaches
+            core ONLY through the contract; a bare terminal is the thinnest
+            client, an agent/notify client does the same calls on your behalf.
 
 HOW IT RUNS
   1. `looop up` — start the pulse: a detached, autonomous loop that senses,
      decides ONE move per changed beat, and runs the worker fleet. That is looop.
-  2. (optional) start a concierge to watch + steer in chat:
-        pi      # then: "you are my looop concierge — show me `looop _ state`,
-                #         relay any pending asks, and help me edit goals; looop
-                #         itself decides. read `looop --help` first."
+  2. (optional) run a client to watch + steer:
+        pi      # then: "be my looop client — read `looop --help`, show me
+                #        `looop _ state`, relay pending asks and let me answer in
+                #        plain language, help me edit goals/PLAYBOOK. looop itself
+                #        decides; you never decide for it."
   3. `looop down` — stop the pulse and every live worker.
-  You can skip the concierge entirely and just edit goals/PLAYBOOK files +
-  answer asks with `looop _ answer`.
+  You can skip a long-running client entirely and drive the contract by hand:
+  `looop _ state`, `looop _ answer`, `looop _ goal write`.
 
 ONE BEAT (sense → decide → act)
   Each beat the pulse wipes + re-runs every `sensors/*.sh` so `snapshots/`
@@ -47,38 +64,63 @@ ONE BEAT (sense → decide → act)
   daily budget breaker (`max_daily_usd`) caps spend.
 
 ============================================================================
-HOW YOU STEER  (you-the-human, or the concierge acting for you)
+CLIENT CONTRACT  (read this to BECOME a looop client)
 ============================================================================
-looop decides on its own — you do NOT drive it beat by beat. You shape WHAT it
-pursues and answer what only you can:
+A client never touches core directly — it drives the contract verbs below.
+Everything a human does (answer asks, steer, watch) goes through these. They are
+backend-agnostic: they work the same whether core's state lives in files, an
+embedded DB, or anything else. A client does FOUR things:
 
-  • Edit goals / the PLAYBOOK — declaratively say what "good" looks like. looop
-    observes the change next beat and steers toward it. Do this with the verbs
-    below (single-writer) or let the concierge do it for you.
-  • Answer worker asks — a worker blocked on a human decision shows up as a
-    pending ask; resolve it with `looop _ answer <ask_id> "<text>"` (or pass `-`
-    / omit the text to read a multi-line answer from stdin / a heredoc).
-  • Watch — `looop watch` (live colored log + session selector) or
-    `looop _ state --json` for a structured snapshot.
+  1. SUBSCRIBE — block cheaply until something needs a human:
+       looop _ wait --actionable     wake on asks/journal moves
+       looop _ wait --only-asks      wake only on a new pending ask
+       looop _ wait [--json]         wake on any category change
+     `_ wait` prints state + a `changed: […]` diff, so ONE call tells you WHAT
+     moved — no follow-up `tail` / `jq` needed.
 
-VERBS (for you / the concierge — looop does NOT need these to act):
-  looop _ state [--json]                     read the full world state
-  looop _ wait [--json] [--only-asks|--actionable]   BLOCK until something changes,
-                                             then print state + a `changed: […]`
-                                             diff summary. --actionable wakes only
-                                             on asks/journal, --only-asks on asks.
-  looop _ asks [--json]                      pending asks only (concierge's narrow view)
-  looop _ answer <ask_id> "<text>"|-  resolve a worker's pending ask
-  looop _ goal write <id> [body|stdin] | _ goal archive <id>
-  looop _ sensor write <name> [script|stdin]
-  looop _ playbook write [body|stdin]
-  (multi-line bodies — incl. `_ answer`: omit the inline body or pass `-`, then
-   pipe it on stdin / heredoc.)
+  2. READ — inspect without blocking:
+       looop _ state [--json]        full world: goals, snapshots, fleet, asks
+       looop _ asks  [--json]        JUST pending asks (id, prompt, ref, options)
+
+  3. ANSWER — resolve a worker blocked on a human decision:
+       looop _ answer <ask_id> "<text>"     inline
+       looop _ answer <ask_id> -            multi-line from stdin / heredoc
+     Each ask carries an id, the prompt, an optional `ref` (an artifact to read
+     first) and optional `options` (discrete choices — map these to buttons /
+     numbered replies). IRREVERSIBLE asks (merge / deploy / delete) MUST get an
+     explicit human yes — never auto-answer them.
+
+  4. STEER — shape WHAT looop pursues (takes effect next beat):
+       looop _ goal write <id> [body|-]   |   looop _ goal archive <id>
+       looop _ playbook write [body|-]
+       looop _ sensor write <name> [script|-]
+     These are the supported steering surface: validated, journaled, and
+     single-writer-safe. (The backend also keeps goals/PLAYBOOK/sensors as plain
+     files you can git + inspect; editing those files directly works and is seen
+     next beat, but skips the journal entry — it is an escape hatch, not the
+     interface. Clients steer through the verbs.)
+
+  Optional nudge verbs for a live worker session:
+       looop _ send <id> "<text>"    type into a worker's terminal
+       looop _ screenshot <id>       capture what a worker shows right now
+
+  BUILD A NOTIFY CLIENT — no core changes; just drive the contract in a loop:
+       while looop _ wait --only-asks --json >/tmp/ev; do
+         # push each new ask to your channel — CARRY THE ASK ID so the reply
+         # correlates — then, on the human's reply:
+         looop _ answer "<ask_id>" "<reply>"
+       done
+     Push once per ask; escalate on age. Route by urgency: desktop/digest for
+     low, chat for normal, SMS/voice for irreversible.
+
+  BUILD AN AGENT CLIENT (a "concierge") — a pi/claude session pointed at looop:
+  have it `_ wait`, relay pending asks to you in plain language, `_ answer` your
+  reply, and edit goals/PLAYBOOK via the write verbs. It interfaces; looop decides.
 
 WORKER CONTRACT (auto-injected into every worker — for reference)
   A worker that needs a human decision runs ONE blocking call and waits:
      answer=$("$LOOOP_BIN" _ ask "$LOOOP_SESSION_ID" --prompt "…" [--ref P] [--options a,b])
-  It needs no terminal/attach — `ask` returns when answered (you reply with
+  It needs no terminal/attach — `ask` returns when answered (a client replies via
   `looop _ answer`). Workers write only to claims/, reports/ and their own code
   sandbox; they end themselves with `_ kill`, lease shared resources with
   `_ claim`/`_ unclaim`, and self-report spend with `_ cost`.
@@ -91,25 +133,27 @@ CODE / CONFIG / DATA are cleanly separated (all overridable by env)
             prompt on stdin) and `interactive` (launch a worker session;
             `{{prompt_file}}` is its brief). Optional: `interval` (cadence),
             `max_daily_usd` (budget breaker), `session_ttl` (corpse retention).
-  DATA    ${XDG_STATE_HOME:-~/.local/state}/looop/  the file-based memory
+  DATA    ${XDG_STATE_HOME:-~/.local/state}/looop/  the file-based backend
           └ override with $LOOOP_DATA_DIR
             PLAYBOOK.md  goals/  journal.md  sensors/*.sh   <- durable memory
-            asks/ answers/   <- the worker <-> human mailbox (relayed by concierge)
+            asks/ answers/   <- the worker <-> human mailbox (surfaced by clients)
             snapshots/ runs/ .lock .last-tick-hash .tick-backoff  <- scratch
             reports/         <- worker deliverables a human reads (persist)
             sessions/<id>/   <- worker + pulse sessions (babysit state, per
                                 profile; auto-reaped after session_ttl, 3d).
+          This layout is the current backend, reached THROUGH the contract — not
+          a public interface. Steer with the verbs, not by writing these files.
 
 BOOTSTRAP
   A fresh data dir is seeded once with a starter PLAYBOOK + goals/setup.md +
   goals/playbook-daily.md + sensors/today.sh, all embedded in this binary. The
-  starter goal's top priority is for looop to invite you (via a journal note the
-  concierge relays) to configure it, then rewrite the seed into your real goals +
+  starter goal's top priority is for looop to invite you (via a journal note a
+  client surfaces) to configure it, then rewrite the seed into your real goals +
   PLAYBOOK.
 
 DEPENDENCIES
   Just the configured agent CLI (claude or pi) — used BOTH for looop's per-beat
-  decide (`tick`) and to launch workers (and, if you run one, the concierge).
+  decide (`tick`) and to launch workers (and, if you run one, an agent client).
   Session management (babysit) is LINKED IN as a library and runs in-process; no
   babysit binary is required. A worker that touches code makes its own sandbox
   (box if available, else git worktree).
