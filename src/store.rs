@@ -7,15 +7,22 @@
 //! / remove / list), not paths, so an embedded-DB backend could implement it
 //! without changing a single caller.
 //!
-//! Scope (staged): this trait currently covers the nouns whose raw access lived
-//! entirely inside one module — the mailbox (`Ask`/`Answer`) and the lease
-//! (`Claim`). Those nouns are now genuinely backend-swappable. Goals / PLAYBOOK /
-//! journal / sensors / goal-activity / action-wal still go through `Paths` and
-//! will migrate noun-by-noun (each moving its reads AND writes together).
+//! Scope: this trait covers core's durable, contract-backed state — the mailbox
+//! (`Ask`/`Answer`), the lease (`Claim`), goals, the PLAYBOOK, the journal, sensor
+//! SCRIPTS, the goal-activity ledger, and the action write-ahead log. All of it is
+//! reached only through these operations, so a DB backend could replace the file
+//! layout wholesale.
 //!
-//! NOT in scope: SensorRuntime + scratch (snapshots, runs, prompts, lock, cost
-//! ledger, reports) — a separate concern with a different lifecycle (regenerated
-//! each beat / append-only / coordination), which stays on [`Paths`].
+//! NOT in scope (deliberately, separate concerns):
+//!   * CHANGE DETECTION — `worldhash` (the wake hash) and tick's `_ wait`
+//!     fingerprints read policy files directly. Detecting "what changed" is
+//!     inherently backend-specific (a DB would use a version column / NOTIFY),
+//!     so it belongs to the backend, not to a generic consumer.
+//!   * SensorRuntime — executing `sensors/*.sh` and the snapshots they emit. A
+//!     sensor's CONTENT is state (here), but RUNNING it needs a real file to
+//!     exec; that path stays on [`Paths`].
+//!   * scratch / coordination — runs, prompts, the `.lock`, the cost ledger,
+//!     reports: regenerated / append-only / locking, different lifecycle.
 
 use crate::paths::Paths;
 use std::fs;
@@ -31,6 +38,19 @@ pub enum Key {
     Answer(String),
     /// A worker's resource lease (`looop _ claim`).
     Claim(String),
+    /// A goal spec (`goals/<id>.md`).
+    Goal(String),
+    /// The PLAYBOOK — the controller logic.
+    Playbook,
+    /// The action log (one line per executed move).
+    Journal,
+    /// A sensor SCRIPT (`sensors/<name>.sh`). Its content is state; executing it
+    /// is SensorRuntime (not this trait).
+    Sensor(String),
+    /// The per-goal "last acted" ledger that drives `sys-goals` fairness.
+    GoalActivity,
+    /// Write-ahead intent log for the in-flight non-idempotent action.
+    ActionWal,
 }
 
 /// A collection of keys to enumerate.
@@ -39,6 +59,17 @@ pub enum Collection {
     Asks,
     Answers,
     Claims,
+    Goals,
+}
+
+impl Collection {
+    /// The file extension the backing files carry (FileStore only).
+    fn ext(self) -> &'static str {
+        match self {
+            Collection::Asks | Collection::Answers | Collection::Claims => "json",
+            Collection::Goals => "md",
+        }
+    }
 }
 
 /// The durable-state operations the contract verbs are built on. Every method is
@@ -59,6 +90,14 @@ pub trait StateStore {
     /// FileStore uses `O_EXCL`; a DB would use a unique insert. This is what lets
     /// two racers never both "win" a lease.
     fn create_exclusive(&self, key: &Key, contents: &str) -> io::Result<bool>;
+
+    /// Append a line (with a trailing newline) to `key`, creating it if absent.
+    /// Used for the journal / append-only logs.
+    fn append_line(&self, key: &Key, line: &str) -> io::Result<()>;
+
+    /// Move `key` into its archived form (FileStore: `goals/archive/<id>.md`).
+    /// Only `Key::Goal` is archivable today.
+    fn archive(&self, key: &Key) -> io::Result<()>;
 
     /// Remove `key`. Absent key is not an error (idempotent).
     fn remove(&self, key: &Key) -> io::Result<()>;
@@ -86,6 +125,12 @@ impl<'a> FileStore<'a> {
             Key::Ask(id) => self.paths.asks_dir().join(format!("{id}.json")),
             Key::Answer(id) => self.paths.answers_dir().join(format!("{id}.json")),
             Key::Claim(name) => self.paths.claims_dir().join(format!("{name}.json")),
+            Key::Goal(id) => self.paths.goals_dir().join(format!("{id}.md")),
+            Key::Playbook => self.paths.playbook(),
+            Key::Journal => self.paths.journal(),
+            Key::Sensor(name) => self.paths.sensors_dir().join(format!("{name}.sh")),
+            Key::GoalActivity => self.paths.goal_activity(),
+            Key::ActionWal => self.paths.action_wal(),
         }
     }
 
@@ -95,6 +140,7 @@ impl<'a> FileStore<'a> {
             Collection::Asks => self.paths.asks_dir(),
             Collection::Answers => self.paths.answers_dir(),
             Collection::Claims => self.paths.claims_dir(),
+            Collection::Goals => self.paths.goals_dir(),
         }
     }
 }
@@ -109,7 +155,18 @@ impl StateStore for FileStore<'_> {
     }
 
     fn write_atomic(&self, key: &Key, contents: &str) -> io::Result<()> {
-        crate::util::write_atomic(&self.path(key), contents.as_bytes())
+        let path = self.path(key);
+        crate::util::write_atomic(&path, contents.as_bytes())?;
+        // A sensor's content is a script the runtime execs, so the backing file
+        // must be executable. The exec bit is a FileStore detail, not a caller's.
+        #[cfg(unix)]
+        if matches!(key, Key::Sensor(_)) {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perm = fs::metadata(&path)?.permissions();
+            perm.set_mode(0o755);
+            fs::set_permissions(&path, perm)?;
+        }
+        Ok(())
     }
 
     fn create_exclusive(&self, key: &Key, contents: &str) -> io::Result<bool> {
@@ -132,6 +189,34 @@ impl StateStore for FileStore<'_> {
         }
     }
 
+    fn append_line(&self, key: &Key, line: &str) -> io::Result<()> {
+        use io::Write;
+        let path = self.path(key);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        writeln!(f, "{line}")
+    }
+
+    fn archive(&self, key: &Key) -> io::Result<()> {
+        match key {
+            Key::Goal(id) => {
+                let from = self.paths.goals_dir().join(format!("{id}.md"));
+                let archive = self.paths.goals_dir().join("archive");
+                fs::create_dir_all(&archive)?;
+                fs::rename(&from, archive.join(format!("{id}.md")))
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "archive: only goals are archivable",
+            )),
+        }
+    }
+
     fn remove(&self, key: &Key) -> io::Result<()> {
         match fs::remove_file(self.path(key)) {
             Ok(()) => Ok(()),
@@ -141,12 +226,13 @@ impl StateStore for FileStore<'_> {
     }
 
     fn list(&self, collection: &Collection) -> Vec<String> {
+        let ext = collection.ext();
         let mut names: Vec<String> = fs::read_dir(self.dir(collection))
             .into_iter()
             .flatten()
             .flatten()
             .map(|e| e.path())
-            .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
+            .filter(|p| p.extension().map(|x| x == ext).unwrap_or(false))
             .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
             .collect();
         names.sort();

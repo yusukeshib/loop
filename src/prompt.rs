@@ -4,6 +4,7 @@
 
 use crate::mailbox;
 use crate::paths::Paths;
+use crate::store::{Collection, FileStore, Key, StateStore};
 use crate::util;
 use std::fmt::Write as _;
 use std::fs;
@@ -137,22 +138,15 @@ fn sorted_glob(dir: &Path, ext: &str) -> Vec<PathBuf> {
 /// — so the fairness nudge names a concrete goal the decider must justify
 /// skipping (RULE: one move/beat can otherwise starve the quiet goals).
 fn most_neglected_goal(paths: &Paths) -> Option<String> {
-    let activity: serde_json::Map<String, serde_json::Value> =
-        fs::read_to_string(paths.goal_activity())
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-    let mut goals: Vec<String> = fs::read_dir(paths.goals_dir())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().map(|x| x == "md").unwrap_or(false))
-        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-        .collect();
-    goals.sort(); // deterministic tie-break
+    let store = FileStore::new(paths);
+    let activity: serde_json::Map<String, serde_json::Value> = store
+        .read(&Key::GoalActivity)
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    // store.list is already sorted (deterministic tie-break).
     // last-acted unix; never-acted => 0 (oldest possible) => ranked most neglected.
-    goals
+    store
+        .list(&Collection::Goals)
         .into_iter()
         .min_by_key(|id| activity.get(id).and_then(|v| v.as_u64()).unwrap_or(0))
 }
@@ -178,20 +172,20 @@ pub fn build_prompt(paths: &Paths, snap_dir: &Path) -> String {
     out.push('\n');
 
     // PLAYBOOK.
+    let store = FileStore::new(paths);
     out.push_str("=== PLAYBOOK ===\n");
-    out.push_str(&fs::read_to_string(paths.playbook()).unwrap_or_default());
+    out.push_str(&store.read(&Key::Playbook).unwrap_or_default());
     out.push('\n');
 
     // GOALS.
     out.push_str("\n=== GOALS ===\n");
-    let goals = sorted_glob(&paths.goals_dir(), "md");
+    let goals = store.list(&Collection::Goals);
     if goals.is_empty() {
         out.push_str("(no goals yet)\n");
     } else {
-        for g in goals {
-            let name = g.file_name().unwrap_or_default().to_string_lossy();
-            let _ = writeln!(out, "--- {name}");
-            out.push_str(&fs::read_to_string(&g).unwrap_or_default());
+        for id in goals {
+            let _ = writeln!(out, "--- {id}.md");
+            out.push_str(&store.read(&Key::Goal(id)).unwrap_or_default());
             out.push('\n');
         }
     }
@@ -245,8 +239,8 @@ pub fn build_prompt(paths: &Paths, snap_dir: &Path) -> String {
 
     // RECENT JOURNAL.
     out.push_str("\n=== RECENT JOURNAL ===\n");
-    match fs::read_to_string(paths.journal()) {
-        Ok(j) if !j.is_empty() => {
+    match store.read(&Key::Journal) {
+        Some(j) if !j.is_empty() => {
             out.push_str(&tail_lines(&j, 20));
             out.push('\n');
         }

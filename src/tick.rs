@@ -18,6 +18,7 @@
 use crate::config::Config;
 use crate::mailbox;
 use crate::paths::Paths;
+use crate::store::{Collection, FileStore, Key, StateStore};
 use crate::util::{self, Level};
 use crate::{events, executor, prompt, runner, sensor, session};
 use anyhow::Result;
@@ -485,20 +486,14 @@ fn snapshots(paths: &Paths) -> serde_json::Map<String, serde_json::Value> {
 }
 
 fn goal_ids(paths: &Paths) -> Vec<String> {
-    let mut v: Vec<String> = fs::read_dir(paths.goals_dir())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().map(|x| x == "md").unwrap_or(false))
-        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-        .collect();
-    v.sort();
-    v
+    // store.list is already sorted.
+    FileStore::new(paths).list(&Collection::Goals)
 }
 
 fn journal_tail(paths: &Paths, n: usize) -> Vec<String> {
-    let text = fs::read_to_string(paths.journal()).unwrap_or_default();
+    let text = FileStore::new(paths)
+        .read(&Key::Journal)
+        .unwrap_or_default();
     let lines: Vec<&str> = text.lines().collect();
     let start = lines.len().saturating_sub(n);
     lines[start..].iter().map(|s| s.to_string()).collect()

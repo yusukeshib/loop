@@ -14,11 +14,10 @@
 
 use crate::paths::Paths;
 use crate::session;
+use crate::store::{FileStore, Key, StateStore};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::fs;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::process::ExitCode;
 
 /// One typed mutation of looop's world. Built by the `_ …` verb handlers below
@@ -90,13 +89,16 @@ fn goal_of(action: &Action) -> Option<String> {
 /// secs). Best-effort: a write failure just means the staleness reading is a
 /// beat stale.
 fn record_goal_activity(paths: &Paths, id: &str) {
-    let path = paths.goal_activity();
-    let mut map: serde_json::Map<String, serde_json::Value> = fs::read_to_string(&path)
-        .ok()
+    let store = FileStore::new(paths);
+    let mut map: serde_json::Map<String, serde_json::Value> = store
+        .read(&Key::GoalActivity)
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
     map.insert(id.to_string(), serde_json::json!(crate::util::now_unix()));
-    let _ = fs::write(&path, serde_json::Value::Object(map).to_string());
+    let _ = store.write_atomic(
+        &Key::GoalActivity,
+        &serde_json::Value::Object(map).to_string(),
+    );
 }
 
 /// Whether re-running this action a second time can cause a DUPLICATE,
@@ -130,14 +132,14 @@ fn begin_intent(paths: &Paths, action: &Action) {
         "ts": crate::util::now_unix(),
     })
     .to_string();
-    let _ = fs::write(paths.action_wal(), body);
+    let _ = FileStore::new(paths).write_atomic(&Key::ActionWal, &body);
 }
 
 /// Clear the intent record once execute() has returned (Ok OR Err): reaching
 /// this line proves the process did not die DURING the side effect, so there is
 /// nothing to recover. Only an actual crash between begin/clear leaves it.
 fn clear_intent(paths: &Paths) {
-    let _ = fs::remove_file(paths.action_wal());
+    let _ = FileStore::new(paths).remove(&Key::ActionWal);
 }
 
 /// At beat start: if a write-ahead intent record survived, the previous beat
@@ -147,11 +149,11 @@ fn clear_intent(paths: &Paths) {
 /// the command actually ran. Idempotent. Returns true when an interrupted
 /// action was found and reported.
 pub fn warn_if_interrupted(paths: &Paths) -> bool {
-    let wal = paths.action_wal();
-    let Ok(raw) = fs::read_to_string(&wal) else {
+    let store = FileStore::new(paths);
+    let Some(raw) = store.read(&Key::ActionWal) else {
         return false;
     };
-    let _ = fs::remove_file(&wal); // one-shot report
+    let _ = store.remove(&Key::ActionWal); // one-shot report
     let v: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
     let akind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("?");
     let fp = v.get("fingerprint").and_then(|x| x.as_str()).unwrap_or("?");
@@ -225,39 +227,28 @@ fn execute_inner(paths: &Paths, action: &Action) -> Result<String> {
 
         Action::WriteGoal { id, body } => {
             safe_segment("goal", id)?;
-            crate::util::write_atomic(
-                &paths.goals_dir().join(format!("{id}.md")),
-                with_trailing_newline(body).as_bytes(),
-            )?;
+            FileStore::new(paths)
+                .write_atomic(&Key::Goal(id.clone()), &with_trailing_newline(body))?;
             Ok(format!("write-goal {id}"))
         }
 
         Action::ArchiveGoal { id } => {
             safe_segment("goal", id)?;
-            let from = paths.goals_dir().join(format!("{id}.md"));
-            let archive = paths.goals_dir().join("archive");
-            fs::create_dir_all(&archive)?;
-            fs::rename(&from, archive.join(format!("{id}.md")))
+            FileStore::new(paths)
+                .archive(&Key::Goal(id.clone()))
                 .with_context(|| format!("archive_goal {id:?}"))?;
             Ok(format!("archive-goal {id}"))
         }
 
         Action::WriteSensor { name, script } => {
             safe_segment("sensor", name)?;
-            let p = paths.sensors_dir().join(format!("{name}.sh"));
-            crate::util::write_atomic(&p, with_trailing_newline(script).as_bytes())?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perm = fs::metadata(&p)?.permissions();
-                perm.set_mode(0o755);
-                fs::set_permissions(&p, perm)?;
-            }
+            FileStore::new(paths)
+                .write_atomic(&Key::Sensor(name.clone()), &with_trailing_newline(script))?;
             Ok(format!("write-sensor {name}"))
         }
 
         Action::WritePlaybook { body } => {
-            crate::util::write_atomic(&paths.playbook(), with_trailing_newline(body).as_bytes())?;
+            FileStore::new(paths).write_atomic(&Key::Playbook, &with_trailing_newline(body))?;
             Ok("write-playbook".into())
         }
 
@@ -277,11 +268,7 @@ fn execute_inner(paths: &Paths, action: &Action) -> Result<String> {
 /// (matching the timestamp the prompt hands the decider).
 fn append_journal(paths: &Paths, line: &str) -> Result<()> {
     let stamp = crate::util::date_fmt("%Y-%m-%d %H:%M");
-    let mut f = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(paths.journal())?;
-    writeln!(f, "- {stamp} {line}")?;
+    FileStore::new(paths).append_line(&Key::Journal, &format!("- {stamp} {line}"))?;
     Ok(())
 }
 
