@@ -290,15 +290,22 @@ pub fn tick(paths: &Paths, force: bool) -> TickOutcome {
     // stays a clean structured-event log.
     let tee: Vec<PathBuf> = vec![run_dir.join("output.log"), paths.data_dir.join("tick.log")];
 
-    let runner_ok = runner::run_streamed(
-        paths,
-        &tick_cmd,
-        &prompt_file,
-        "tick",
-        &cost_id,
-        &runner_name,
-        &tee,
-    );
+    let runner_ok = {
+        // Show a live "working" indicator on the pulse's stdout while the runner
+        // streams (its chatter is teed to the replay archive, not echoed here).
+        // Dropped right after the run, which erases the spinner line so the
+        // following structured outcome event prints clean.
+        let _spin = util::Spinner::start(&format!("{runner_name} is deciding"));
+        runner::run_streamed(
+            paths,
+            &tick_cmd,
+            &prompt_file,
+            "tick",
+            &cost_id,
+            &runner_name,
+            &tee,
+        )
+    };
     let secs = t0.elapsed().as_secs();
     let outcome = if runner_ok {
         executor::consume_decision(paths)

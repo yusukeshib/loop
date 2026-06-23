@@ -481,28 +481,13 @@ impl App {
     fn draw_log(&mut self, frame: &mut Frame, area: Rect) {
         // Cleared each frame; set below only when a scrollbar is actually drawn.
         self.scrollbar = None;
-        let follow = self.scroll_back == 0;
         let id = self.selected_id().unwrap_or("—").to_string();
 
-        // Borderless: a single header line, then the log fills the rest at full
-        // width. No box — side borders would eat into the 80-column stream and
-        // get swept up by terminal text selection; the id + follow state live in
-        // this one line instead.
-        let status = if follow {
-            "live"
-        } else {
-            "scrolled · End=live"
-        };
-        let header = Line::from(vec![
-            Span::styled(
-                format!(" {id} "),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!("— {status}"), Style::default().fg(Color::DarkGray)),
-        ]);
-        let parts = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(area);
-        frame.render_widget(Paragraph::new(header), parts[0]);
-        let body = parts[1];
+        // Borderless and headerless: the log fills the whole pane at full width.
+        // No box — side borders would eat into the 80-column stream and get swept
+        // up by terminal text selection. The selected id is already shown in the
+        // bottom session pane, so no title line is needed here.
+        let body = area;
 
         // No log file, or a file that exists but is empty: a dim hint; the view
         // can't be scrolled.

@@ -25,22 +25,21 @@ pub fn is_json() -> bool {
     *JSON.get().unwrap_or(&false)
 }
 
-/// Decide once whether to emit ANSI, mirroring the bash gate:
-/// `$LOOOP_COLOR` wins; else a tty on stdout with no `$NO_COLOR`.
-/// JSON mode forces color OFF so the machine stream stays free of escapes.
+/// Decide once whether to emit ANSI: a tty on stdout with no `$NO_COLOR`, and
+/// never in JSON mode (the machine stream stays free of escapes).
+///
+/// Each looop process decides from its OWN stdout — there is NO inherited
+/// override. looop re-execs itself (the detached pulse supervisor, worker
+/// self-callbacks), and a previous design exported the computed decision so the
+/// tree shared one choice. That backfired: the detached supervisor runs with
+/// stdout=/dev/null, so it computed "no color" and pushed that down onto the
+/// PTY-backed pulse below it, leaving the pulse log uncolored. Self-detection
+/// fixes it structurally — the pulse sees its real PTY and colors correctly;
+/// sensors write JSON to files (never colored); workers are pi/claude under
+/// their own PTY (they self-color). `NO_COLOR` is the one honored opt-out.
 pub fn init_color() {
-    let enabled = if is_json() {
-        false
-    } else {
-        match std::env::var("LOOOP_COLOR") {
-            Ok(v) if v == "1" => true,
-            Ok(v) if v == "0" => false,
-            _ => is_stdout_tty() && std::env::var_os("NO_COLOR").is_none(),
-        }
-    };
+    let enabled = !is_json() && is_stdout_tty() && std::env::var_os("NO_COLOR").is_none();
     let _ = COLOR.set(enabled);
-    // Export so children (the tick runner, sensors, workers) inherit the decision.
-    unsafe { std::env::set_var("LOOOP_COLOR", if enabled { "1" } else { "0" }) };
 }
 
 fn color_on() -> bool {
@@ -273,6 +272,76 @@ fn is_executable(p: &std::path::Path) -> bool {
 #[cfg(not(unix))]
 fn is_executable(_p: &std::path::Path) -> bool {
     true
+}
+
+/// A lightweight, in-place "something is happening" indicator for the pulse's
+/// PTY stdout while a long, otherwise-silent step runs. The tick runner can take
+/// minutes and its chatter is teed to the replay archive (NOT echoed live, to
+/// keep the pulse a clean structured-event log) — so without this the stream
+/// goes quiet between `→ … is deciding the one move` and the `✓`/`✗` outcome.
+///
+/// Repaints ONE line every second via `\r` (spinner glyph + label + elapsed),
+/// then erases it on drop so the next structured event prints clean. It is a
+/// no-op unless color (ANSI) is enabled: JSON mode and `NO_COLOR` streams stay
+/// byte-clean, and a non-PTY consumer never sees stray carriage returns.
+pub struct Spinner {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Spinner {
+    /// Start the indicator (no-op when color is off). `label` is a short verb
+    /// phrase, e.g. `"pi is deciding"`.
+    pub fn start(label: &str) -> Self {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = if color_on() {
+            let stop = stop.clone();
+            let label = label.to_string();
+            Some(std::thread::spawn(move || {
+                const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                let t0 = std::time::Instant::now();
+                let mut i = 0usize;
+                // Repaint about once a second so the elapsed counter advances
+                // visibly while keeping the PTY transcript small (~one short
+                // line/sec). Poll `stop` in 100ms steps so drop() is responsive.
+                while !stop.load(Ordering::Relaxed) {
+                    let secs = t0.elapsed().as_secs();
+                    print!(
+                        "\r{}{} {label} {secs}s{}",
+                        dim(),
+                        FRAMES[i % FRAMES.len()],
+                        rst()
+                    );
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                    i += 1;
+                    for _ in 0..10 {
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                }
+            }))
+        } else {
+            None
+        };
+        Spinner { stop, handle }
+    }
+}
+
+impl Drop for Spinner {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+            // Erase the spinner line (CR + clear-to-end-of-line) so the next
+            // structured event prints on a clean line.
+            print!("\r\x1b[2K");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+        }
+    }
 }
 
 #[cfg(test)]
