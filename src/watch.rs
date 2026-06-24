@@ -183,6 +183,9 @@ struct App {
     parse_rx: Receiver<ParseResult>,
     parse_gen: u64,
     loading: Option<String>,
+    /// `true` while the left mouse button is held after grabbing the scrollbar,
+    /// so drags keep scrubbing even when the cursor drifts off the thin column.
+    dragging_scrollbar: bool,
 }
 
 /// A request to the replay worker: parse `path` for session `id`. `gen` lets
@@ -290,14 +293,16 @@ impl App {
             parse_rx,
             parse_gen: 0,
             loading: None,
+            dragging_scrollbar: false,
         }
     }
 
-    /// Map a mouse position on the log scrollbar to a `scroll_back` value.
-    /// Returns `false` if the click/drag wasn't on the scrollbar (so the
-    /// caller can ignore it). The track is mapped linearly top→bottom:
-    /// top (↑) = oldest scrollback, bottom (↓) = live tail.
-    fn scrollbar_drag(&mut self, col: u16, row: u16) -> bool {
+    /// Begin a scrollbar drag. Returns `true` if `(col, row)` landed on the
+    /// bar's column (within the track), scrubbing the viewport to that row. The
+    /// caller then holds the grab and feeds later moves to `scrollbar_scrub`
+    /// (row only) until mouse-up, so the cursor can wander off the thin column
+    /// without the grab snapping loose.
+    fn scrollbar_grab(&mut self, col: u16, row: u16) -> bool {
         let Some(hit) = self.scrollbar else {
             return false;
         };
@@ -308,16 +313,29 @@ impl App {
         if col + 1 < a.right() || col > a.right() || row < a.top() || row >= a.bottom() {
             return false;
         }
+        self.scrollbar_scrub(row);
+        true
+    }
+
+    /// Scrub the viewport to `row` on the scrollbar track, ignoring the column
+    /// (used while a grab is held). The row is clamped into the track, so
+    /// dragging past the top/bottom pins to the oldest/newest line. The track
+    /// maps linearly top→bottom: top (↑) = oldest scrollback, bottom (↓) = tail.
+    fn scrollbar_scrub(&mut self, row: u16) {
+        let Some(hit) = self.scrollbar else {
+            return;
+        };
+        let a = hit.area;
         let span = a.height.saturating_sub(1);
+        let clamped = row.clamp(a.top(), a.bottom().saturating_sub(1));
         let pos = if span == 0 {
             0
         } else {
-            let frac = (row - a.top()) as f64 / span as f64;
+            let frac = (clamped - a.top()) as f64 / span as f64;
             (frac * hit.max_scroll as f64).round() as usize
         };
         // pos counts from the top (oldest); scroll_back counts from the tail.
         self.scroll_back = hit.max_scroll.saturating_sub(pos);
-        true
     }
 
     /// Select the session under a mouse click on the bottom list. Returns
@@ -538,9 +556,19 @@ impl App {
                             }
                         }
                     }
-                    // Mouse wheel scrolls the log pane (3 lines per notch, the
-                    // usual terminal step). Capturing it ourselves is what keeps
-                    // the alternate screen from being scrolled and corrupted.
+                    // The floating picker, when open, is modal: it captures the
+                    // wheel (to move the selection) and clicks (to pick a row).
+                    // Otherwise the mouse drives the log: wheel scrolls and the
+                    // scrollbar can be clicked/dragged. Capturing the wheel
+                    // ourselves keeps the alternate screen from being corrupted.
+                    Event::Mouse(m) if self.picking => match m.kind {
+                        MouseEventKind::ScrollUp => self.move_selection(-1),
+                        MouseEventKind::ScrollDown => self.move_selection(1),
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            let _ = self.select_at(m.column, m.row);
+                        }
+                        _ => {}
+                    },
                     Event::Mouse(m) => match m.kind {
                         MouseEventKind::ScrollUp => {
                             self.scroll_back = self.scroll_back.saturating_add(3)
@@ -548,18 +576,17 @@ impl App {
                         MouseEventKind::ScrollDown => {
                             self.scroll_back = self.scroll_back.saturating_sub(3)
                         }
-                        // Click or drag on the scrollbar jumps/scrubs the
-                        // viewport to that position in the scrollback.
-                        // Drag scrubs the scrollbar; a plain click scrubs the
-                        // scrollbar OR, failing that, selects a session row.
-                        MouseEventKind::Drag(MouseButton::Left) => {
-                            self.scrollbar_drag(m.column, m.row);
-                        }
+                        // Grab the scrollbar on press; once grabbed, keep
+                        // scrubbing on every drag (row only) until release, so
+                        // the cursor can leave the column without dropping it.
                         MouseEventKind::Down(MouseButton::Left) => {
-                            // Try the scrollbar first; if the click missed it,
-                            // fall through to selecting a session row.
-                            let _ = self.scrollbar_drag(m.column, m.row)
-                                || self.select_at(m.column, m.row);
+                            self.dragging_scrollbar = self.scrollbar_grab(m.column, m.row);
+                        }
+                        MouseEventKind::Drag(MouseButton::Left) if self.dragging_scrollbar => {
+                            self.scrollbar_scrub(m.row);
+                        }
+                        MouseEventKind::Up(MouseButton::Left) => {
+                            self.dragging_scrollbar = false;
                         }
                         _ => {}
                     },
@@ -769,8 +796,25 @@ impl App {
         frame.render_widget(Paragraph::new(Text::from(lines)), body);
 
         // Scrollbar at the body's right edge, reflecting position in the range.
-        if max_scroll > 0 {
-            let mut state = ScrollbarState::new(max_scroll).position(max_scroll - back);
+        // Hidden while the picker is open — it owns the input then, and a stray
+        // bar behind the floating box is just noise.
+        if max_scroll > 0 && !self.picking {
+            // ratatui sizes the thumb as `viewport * track / (content + viewport)`,
+            // so a deep scrollback collapses it to a single hard-to-grab row.
+            // Inflate the viewport length until the thumb is at least
+            // `MIN_THUMB` rows (it only affects the thumb's *size*, not the
+            // position mapping, which our `scrollbar_drag` computes itself).
+            const MIN_THUMB: usize = 4;
+            let track = body.height as usize;
+            let viewport = if track > MIN_THUMB {
+                let need = (MIN_THUMB * max_scroll.saturating_sub(1)).div_ceil(track - MIN_THUMB);
+                need.max(track)
+            } else {
+                track
+            };
+            let mut state = ScrollbarState::new(max_scroll)
+                .position(max_scroll - back)
+                .viewport_content_length(viewport);
             let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
                 .end_symbol(None)
@@ -784,6 +828,8 @@ impl App {
                 area: body,
                 max_scroll,
             });
+        } else {
+            self.scrollbar = None;
         }
     }
 
