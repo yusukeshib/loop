@@ -500,6 +500,7 @@ impl App {
                             // Floating picker: navigate sessions, ENTER/ESC closes
                             // it and hands focus back to the log.
                             match key.code {
+                                KeyCode::Char('q') => break,
                                 KeyCode::Enter | KeyCode::Esc => self.picking = false,
                                 KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
                                 KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
@@ -641,12 +642,12 @@ impl App {
             } else {
                 String::new()
             };
-            format!(" {name}{hidden}  ↑/↓ move · a filter · enter select · esc cancel ")
+            format!(" {name}{hidden}  ↑/↓ move · a filter · enter select · esc cancel · q quit ")
         } else {
             let id = self.selected_id().unwrap_or("—").to_string();
             format!(" {id}  ↑/↓ scroll · esc sessions · q quit ")
         };
-        let style = Style::default().bg(Color::White).fg(Color::Black);
+        let style = Style::default().bg(Color::Rgb(40, 40, 40)).fg(Color::White);
         frame.render_widget(Paragraph::new(Span::styled(help, style)).style(style), area);
     }
 
@@ -844,13 +845,15 @@ impl App {
         };
 
         let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL))
-            // Uniform white background on the selected row. REVERSED would
-            // flip each span's fg into its bg (green dot → green block, gray
-            // detail → gray block), which reads as a messy multicolored bar;
-            // forcing bg=white + fg=black patches over the per-span colors for
-            // one clean highlight.
-            .highlight_style(Style::default().bg(Color::White).fg(Color::Black));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            )
+            // Subtle highlight on the selected row: just a dim bg. The dark
+            // background keeps the per-span colors (green dot, gray detail)
+            // legible, so — unlike a white highlight — we don't override fg.
+            .highlight_style(Style::default().bg(Color::Rgb(40, 40, 40)));
         frame.render_stateful_widget(list, area, &mut self.list_state);
 
         // Record the list geometry so a mouse click can hit-test a row. The
