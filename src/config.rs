@@ -7,12 +7,17 @@
 //! prompt file. `resume` = how to re-attach a worker session.
 //!
 //! NOT INITIALIZED = no config file. `looop up` REFUSES to start the pulse in
-//! that state and tells the operator to run `looop init`, which picks a runner
-//! (claude/codex/opencode/pi, claude by default) + prefilled models and writes
-//! the wiring. The inline `DEFAULT_CONFIG` (claude) remains only as a safety net
-//! for `Config::load` (e.g. a `_` verb that runs without a file); the front-door
-//! `up` path is gated on init. Switch later by re-running `looop init` or editing
-//! the three commands by hand.
+//! that state and tells the operator to run `looop init`, which lets you EDIT the
+//! three command strings (prefilled with the current values, or the claude
+//! default on first run) and writes the wiring. The inline `DEFAULT_CONFIG`
+//! (claude) is the only wiring this code knows about; it is both the first-run
+//! default and the safety net for `Config::load` (e.g. a `_` verb that runs
+//! without a file).
+//!
+//! looop is deliberately a GLUE layer: it does NOT bake in per-runner command
+//! knowledge (codex/opencode/pi flags, model ids, …). The only runner literal in
+//! code is the single claude default below; ready-to-paste wirings for other
+//! runners live in the README, and `looop init` just lets you edit the strings.
 //!
 //! TICK OUTPUT (H3): `runner::run_streamed` renders every tick IN-PROCESS off the
 //! runner's NDJSON stdout. Both runners therefore need their structured stream
@@ -24,14 +29,12 @@
 //! its tick command with `| "$LOOOP_BIN" _ fmt`. `runner_cmd` strips that trailing
 //! seam on load (see `strip_fmt_seam`), so old configs keep working unchanged.
 //!
-//! MODEL ALLOCATION (M4): the tick is one tiny decision (pick the single next
-//! move), so the default `pi` wiring runs it on a fast model at low thinking
-//! (claude-sonnet-4-5, `--thinking low`); workers do the heavy multi-step
-//! execution on the stronger model (claude-opus-4-8, `--thinking medium`).
-//!
-//! Spend stays bounded because the world-hash gate skips the AI entirely when
-//! nothing changed, and the tick emits only one tiny decision. Operators who want
-//! to trade decision quality for cost can drop the tick model in this file.
+//! MODEL ALLOCATION: the tick is one tiny decision (pick the single next move),
+//! so the default claude wiring runs it on the fast model (`--model sonnet`);
+//! workers do the heavy multi-step execution on the stronger model (`--model
+//! opus`). Spend stays bounded because the world-hash gate skips the AI entirely
+//! when nothing changed, and the tick emits only one tiny decision. Tune by
+//! editing the commands (`looop init` or the file directly).
 
 use crate::paths::Paths;
 use anyhow::{Context, Result};
@@ -48,109 +51,20 @@ pub const DEFAULT_CONFIG: &str = r#"{
 }
 "#;
 
-/// A runner the `looop init` wizard can wire up. `tick_model` / `worker_model`
-/// are the PREFILLED defaults shown in the wizard; an empty string means "let the
-/// runner choose its own default" — the `--model` flag is then omitted from the
-/// rendered command. Order here is the order the wizard offers them.
-pub struct RunnerSpec {
-    pub name: &'static str,
-    pub tick_model: &'static str,
-    pub worker_model: &'static str,
-}
+/// The three keys a wiring is made of, in the order `looop init` prompts for
+/// them. Editing-only metadata: `looop` itself reads them via [`Config`].
+pub const KEYS: [&str; 3] = ["tick", "interactive", "resume"];
 
-/// The runners `looop init` offers. claude is the default (first). The tick is one
-/// tiny decision, so it gets the cheap/fast model; workers do the heavy
-/// multi-step execution on the stronger model.
-pub const RUNNERS: &[RunnerSpec] = &[
-    RunnerSpec {
-        name: "claude",
-        tick_model: "sonnet",
-        worker_model: "opus",
-    },
-    RunnerSpec {
-        name: "codex",
-        tick_model: "",
-        worker_model: "",
-    },
-    RunnerSpec {
-        name: "opencode",
-        tick_model: "",
-        worker_model: "",
-    },
-    RunnerSpec {
-        name: "pi",
-        tick_model: "claude-sonnet-4-5",
-        worker_model: "claude-opus-4-8",
-    },
-];
-
-/// Look up a runner spec by name (e.g. the wizard's chosen runner).
-pub fn runner_spec(name: &str) -> Option<&'static RunnerSpec> {
-    RUNNERS.iter().find(|r| r.name == name)
-}
-
-/// `" <prefix> <model>"` when `model` is non-empty, else `""` — so an empty model
-/// drops the flag entirely and the runner uses its own configured default.
-fn model_flag(prefix: &str, model: &str) -> String {
-    let m = model.trim();
-    if m.is_empty() {
-        String::new()
-    } else {
-        format!(" {prefix} {m}")
-    }
-}
-
-/// Render the three-command wiring JSON for `runner` with the chosen models.
-/// Returns None for an unknown runner. Each runner must run UNATTENDED (no
-/// permission prompts — the detached pulse can't answer them) and the `tick`
-/// command must emit a structured stream that `runner::run_streamed` can archive.
-///
-/// `tick` reads its prompt from STDIN (run_streamed pipes the prompt file in), so
-/// no prompt argument is passed. `interactive` substitutes {{prompt_file}} with
-/// the worker's prompt file path.
-pub fn render_config(runner: &str, tick_model: &str, worker_model: &str) -> Option<String> {
-    let t = model_flag("--model", tick_model);
-    let w = model_flag("--model", worker_model);
-    let tc = model_flag("-m", tick_model);
-    let wc = model_flag("-m", worker_model);
-    let (tick, interactive, resume) = match runner {
-        "claude" => (
-            format!(
-                "claude -p --output-format stream-json --verbose --dangerously-skip-permissions{t}"
-            ),
-            format!("claude --dangerously-skip-permissions{w} \"$(cat {{{{prompt_file}}}})\""),
-            "claude --resume".to_string(),
-        ),
-        // codex exec reads the prompt from stdin; --json emits JSONL; the bypass
-        // flag is required so a detached run never stops on an approval prompt.
-        "codex" => (
-            format!("codex exec --json --dangerously-bypass-approvals-and-sandbox{tc}"),
-            format!(
-                "codex --dangerously-bypass-approvals-and-sandbox{wc} \"$(cat {{{{prompt_file}}}})\""
-            ),
-            "codex resume".to_string(),
-        ),
-        // opencode wiring is best-effort (verify against your installed version).
-        "opencode" => (
-            format!("opencode run{tc}"),
-            format!("opencode{wc} \"$(cat {{{{prompt_file}}}})\""),
-            "opencode --continue".to_string(),
-        ),
-        "pi" => (
-            format!(
-                "pi -p --mode json -ne{t} --thinking low 'Execute the looop tick instructions provided on stdin.'"
-            ),
-            format!("pi{w} --thinking medium @{{{{prompt_file}}}}"),
-            "pi --session".to_string(),
-        ),
-        _ => return None,
-    };
+/// Assemble the wiring JSON from the three command strings the user supplied to
+/// `looop init`. Pure serialization — NO per-runner knowledge lives here; the
+/// commands are whatever the operator typed (seeded from the claude default).
+pub fn wiring_json(tick: &str, interactive: &str, resume: &str) -> String {
     let v = serde_json::json!({
         "tick": tick,
         "interactive": interactive,
         "resume": resume,
     });
-    Some(serde_json::to_string_pretty(&v).expect("config json") + "\n")
+    serde_json::to_string_pretty(&v).expect("config json") + "\n"
 }
 
 /// The parsed config — kept as a generic JSON value so the runner table stays
@@ -224,7 +138,7 @@ pub fn is_initialized(paths: &Paths) -> bool {
 }
 
 /// Write the runner wiring to $LOOOP_CONFIG (creating its parent dir). Used by
-/// `looop init`; overwrites any existing file (the wizard confirms first).
+/// `looop init`; always overwrites any existing file.
 pub fn write(paths: &Paths, contents: &str) -> Result<()> {
     if let Some(dir) = paths.config.parent() {
         fs::create_dir_all(dir)
@@ -279,42 +193,15 @@ mod tests {
     }
 
     #[test]
-    fn render_config_covers_every_offered_runner() {
-        for spec in super::RUNNERS {
-            let json = super::render_config(spec.name, spec.tick_model, spec.worker_model)
-                .expect("known runner renders");
-            let v: serde_json::Value = serde_json::from_str(&json).expect("renders valid json");
-            for key in ["tick", "interactive", "resume"] {
-                assert!(
-                    v.get(key).and_then(|x| x.as_str()).is_some(),
-                    "{} missing {key}",
-                    spec.name
-                );
-            }
-            // The runner label is the first token of the tick command.
-            assert!(
-                v["tick"].as_str().unwrap().starts_with(spec.name),
-                "{} tick should start with the runner name",
-                spec.name
-            );
-            // {{prompt_file}} must survive into the interactive command.
-            assert!(
-                v["interactive"]
-                    .as_str()
-                    .unwrap()
-                    .contains("{{prompt_file}}")
-            );
-        }
-        assert!(super::render_config("nope", "", "").is_none());
-    }
-
-    #[test]
-    fn empty_model_drops_the_flag() {
-        let json = super::render_config("codex", "", "").unwrap();
-        assert!(!json.contains("--model"));
-        assert!(!json.contains(" -m "));
-        let json = super::render_config("claude", "sonnet", "opus").unwrap();
-        assert!(json.contains("--model sonnet"));
-        assert!(json.contains("--model opus"));
+    fn wiring_json_round_trips_the_three_commands() {
+        let json = super::wiring_json("T cmd", "I {{prompt_file}}", "R cmd");
+        let cfg = super::Config {
+            root: serde_json::from_str(&json).expect("wiring json parses"),
+        };
+        assert_eq!(cfg.runner_cmd("tick").unwrap(), "T cmd");
+        assert_eq!(cfg.runner_cmd("interactive").unwrap(), "I {{prompt_file}}");
+        assert_eq!(cfg.runner_cmd("resume").unwrap(), "R cmd");
+        // Keys match the documented edit order.
+        assert_eq!(super::KEYS, ["tick", "interactive", "resume"]);
     }
 }

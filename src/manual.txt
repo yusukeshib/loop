@@ -144,11 +144,12 @@ CODE / CONFIG / DATA are cleanly separated (all overridable by env)
           a public interface. Steer with the verbs, not by writing these files.
 
 BOOTSTRAP
-  Run `looop init` once to choose the agent runner (claude/codex/opencode/pi) and
-  write its wiring; claude is the default and the loop will run on it even before
-  you init. A fresh data dir is seeded once with a starter PLAYBOOK + goals/setup
-  .md + goals/playbook-daily.md + sensors/today.sh, all embedded in this binary.
-  The starter goal's top priority is for looop to invite you (via a journal note a
+  Run `looop init` once: it lets you edit the three command strings of the wiring
+  (tick/interactive/resume), prefilled with the claude default (paste another
+  runner's wiring from the README to switch). `looop up` requires this. A fresh
+  data dir is also seeded once with a starter PLAYBOOK + goals/setup.md +
+  goals/playbook-daily.md + sensors/today.sh, all embedded in this binary. The
+  starter goal's top priority is for looop to invite you (via a journal note a
   client surfaces) to configure it, then rewrite the seed into your real goals +
   PLAYBOOK.
 

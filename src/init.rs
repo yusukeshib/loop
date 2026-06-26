@@ -1,20 +1,26 @@
-//! `looop init` — the interactive first-run wizard.
+//! `looop init` — the interactive setup.
 //!
-//! Asks a short series of questions (runner → tick model → worker model), each
-//! prefilled with a sensible default (claude/sonnet/opus), and writes the chosen
-//! runner wiring to $LOOOP_CONFIG. It is the ONLY thing that needs "installing".
+//! Lets you edit the THREE command strings of the wiring (`tick`, `interactive`,
+//! `resume`) and writes them to $LOOOP_CONFIG. Each prompt is prefilled with the
+//! CURRENT value (or the inline claude default on first run), so re-running init
+//! shows what you have now and you tweak it in place.
 //!
-//! Each prompt is a small readline-style editor (`editable`): the default value
-//! is placed IN the editable buffer so you can press Enter to accept it or edit
-//! it in place (←/→, Home/End, Backspace/Del, Ctrl-A/E/U). Esc / Ctrl-C aborts.
-//! It uses crossterm (already pulled in via ratatui) — no extra dependency.
+//! NO per-runner knowledge lives here — looop is glue. We seed the prompts from
+//! the claude default (config.rs) and otherwise just edit whatever strings the
+//! operator types. Ready-to-paste wirings for codex/opencode/pi are in the README.
+//!
+//! Each prompt is a small readline-style editor (`editable`): the value is in the
+//! editable buffer so you can press Enter to accept or edit in place (←/→,
+//! Home/End, Backspace/Del, Ctrl-A/E/U); long commands scroll horizontally within
+//! one line. Esc / Ctrl-C aborts. It uses crossterm (already pulled in via
+//! ratatui) — no extra dependency.
 //!
 //! Not deps-gated: the whole point is to configure looop BEFORE the runner CLI is
 //! necessarily on PATH, so we never preflight the runner binary here.
 //!
-//! Non-interactive stdin (piped / not a TTY) takes every default silently and
-//! never clobbers an existing config — so `looop init </dev/null` is a safe way
-//! to lay down the default wiring in scripts.
+//! Non-interactive stdin (piped / not a TTY) keeps every current/default value
+//! silently, so `looop init </dev/null` lays down the default wiring in scripts.
+//! Re-running `looop init` always overwrites the existing config (no prompt).
 
 use crate::config;
 use crate::paths::Paths;
@@ -25,7 +31,7 @@ use ratatui::crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode},
+    terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode, size},
 };
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::process::ExitCode;
@@ -37,63 +43,48 @@ pub fn cmd_init(paths: &Paths) -> Result<ExitCode> {
 
     let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
 
-    if config::is_initialized(paths) {
-        if !tty {
-            println!(
-                "looop: already initialized ({}) — nothing to do.",
-                paths.config.display()
-            );
-            return Ok(ExitCode::SUCCESS);
-        }
-        print!(
-            "looop: config already exists at {} — overwrite? [y/N]: ",
-            paths.config.display()
-        );
-        let _ = io::stdout().flush();
-        if !read_yes() {
-            println!("looop init: keeping the existing config.");
-            return Ok(ExitCode::SUCCESS);
-        }
-    }
-
-    println!("looop init — configure the agent runner that drives ticks and workers.");
+    // Re-running init always overwrites (the config is small + easy to redo);
+    // we never prompt to confirm.
+    println!("looop init — edit the agent commands that drive ticks and workers.");
     if tty {
         println!(
-            "{}(edit the prefilled value, or press Enter to accept; Esc to abort){}",
-            dim(),
-            rst()
+            "{d}each line is prefilled with the current value; edit it or press Enter to keep.{r}",
+            d = dim(),
+            r = rst()
+        );
+        println!(
+            "{d}see the README for ready-made claude / codex / opencode / pi wirings. Esc aborts.{r}",
+            d = dim(),
+            r = rst()
         );
     } else {
-        println!("(non-interactive stdin: taking defaults)");
+        println!("(non-interactive stdin: keeping current/default values)");
     }
     println!();
 
-    let choices: Vec<&str> = config::RUNNERS.iter().map(|r| r.name).collect();
-    let Some(runner) = prompt_choice(&choices, "claude", tty) else {
-        return aborted();
-    };
-    // Always resolvable: prompt_choice only returns a listed name or the default.
-    let spec = config::runner_spec(&runner)
-        .or_else(|| config::runner_spec("claude"))
-        .expect("claude spec exists");
+    // Seed each prompt from the EXISTING config when re-running, else the inline
+    // claude default (Config::load falls back to it when no file exists). NO
+    // per-runner knowledge here — we just edit whatever strings are there.
+    let cfg = config::Config::load(paths)?;
+    let mut edited: Vec<String> = Vec::with_capacity(config::KEYS.len());
+    for key in config::KEYS {
+        let current = cfg.runner_cmd(key).unwrap_or_default();
+        let Some(val) = prompt_value(key, &current, tty) else {
+            return aborted();
+        };
+        edited.push(val);
+    }
 
-    let Some(tick) = prompt_value("Tick model (cheap per-beat decision)", spec.tick_model, tty)
-    else {
-        return aborted();
-    };
-    let Some(worker) = prompt_value("Worker model (heavy execution)", spec.worker_model, tty)
-    else {
-        return aborted();
-    };
+    let json = config::wiring_json(&edited[0], &edited[1], &edited[2]);
+    config::write(paths, &json)?;
 
-    let Some(cfg) = config::render_config(&runner, &tick, &worker) else {
-        eprintln!("looop init: unknown runner '{runner}'");
-        return Ok(ExitCode::from(1));
-    };
-    config::write(paths, &cfg)?;
-
+    // The runner label is just the first token of the tick command — for display.
+    let runner = edited[0]
+        .split_whitespace()
+        .next()
+        .unwrap_or("your runner")
+        .to_string();
     println!("\nWrote {} (runner: {runner}).", paths.config.display());
-    println!("Edit that file any time to tweak the tick / interactive / resume commands.");
     print_next_steps(&runner);
     Ok(ExitCode::SUCCESS)
 }
@@ -126,50 +117,16 @@ fn read_line() -> Option<String> {
     }
 }
 
-/// y/Y/yes → true; anything else (incl. EOF) → false.
-fn read_yes() -> bool {
-    matches!(read_line().as_deref(), Some("y" | "Y" | "yes"))
-}
-
-/// Ask for a free-form value, prefilling `default` into the editable buffer.
-/// `None` = the user aborted. Empty submission (or non-TTY) takes `default`.
-fn prompt_value(label: &str, default: &str, tty: bool) -> Option<String> {
+/// Ask for a value, prefilling `current` into the editable buffer. `None` = the
+/// user aborted. Empty submission (or non-TTY) keeps `current`.
+fn prompt_value(label: &str, current: &str, tty: bool) -> Option<String> {
     if !tty {
-        return Some(default.to_string());
+        return Some(current.to_string());
     }
-    match editable(&format!("{label}: "), default) {
-        Edit::Line(s) => Some(if s.is_empty() { default.to_string() } else { s }),
+    match editable(label, current) {
+        Edit::Line(s) => Some(if s.is_empty() { current.to_string() } else { s }),
         Edit::Abort => None,
-        Edit::Unsupported => Some(fallback_line(label, default)),
-    }
-}
-
-/// Ask for one of `choices`, prefilling the editable buffer and re-asking on an
-/// unrecognized answer (keeping the typed attempt so it can be fixed). `None` =
-/// aborted; empty submission takes `default`.
-fn prompt_choice(choices: &[&str], default: &str, tty: bool) -> Option<String> {
-    if !tty {
-        return Some(default.to_string());
-    }
-    let mut seed = default.to_string();
-    loop {
-        match editable("Runner: ", &seed) {
-            Edit::Line(s) => {
-                let s = if s.is_empty() { default.to_string() } else { s };
-                if choices.contains(&s.as_str()) {
-                    return Some(s);
-                }
-                println!(
-                    "  {}'{s}' is not one of: {}{}",
-                    dim(),
-                    choices.join(", "),
-                    rst()
-                );
-                seed = s;
-            }
-            Edit::Abort => return None,
-            Edit::Unsupported => return Some(fallback_choice(choices, default)),
-        }
+        Edit::Unsupported => Some(fallback_line(label, current)),
     }
 }
 
@@ -184,29 +141,36 @@ enum Edit {
     Unsupported,
 }
 
-/// A minimal readline-style editor: prints `prompt`, prefills `initial` into the
-/// editable buffer (cursor at end), and lets the user edit in place. Returns when
-/// the user submits or aborts. Restores cooked mode before returning.
-fn editable(prompt: &str, initial: &str) -> Edit {
+/// A readline-style editor. Prints `label` on its own dim line, then edits the
+/// command on the line below, prefilled with `initial` (cursor at end). Long
+/// commands SCROLL HORIZONTALLY within one physical line (window = term width-1),
+/// so wrapping never confuses the cursor math. Restores cooked mode before
+/// returning.
+fn editable(label: &str, initial: &str) -> Edit {
     let mut out = io::stdout();
     if enable_raw_mode().is_err() {
         return Edit::Unsupported;
     }
-    let prompt_cols = prompt.chars().count() as u16;
+    // "label: " (gray) is the inline prefix; the command (normal) is edited after
+    // it, scrolling horizontally so it never wraps. `+2` = the ": " suffix.
+    let label_cols = label.chars().count() as u16 + 2;
     let mut buf: Vec<char> = initial.chars().collect();
     let mut pos = buf.len();
 
     let result = loop {
-        // Redraw the whole line: home, clear, prompt + buffer, then park cursor.
-        let line: String = buf.iter().collect();
+        // Single-line horizontal-scroll window so long commands never wrap (which
+        // would break absolute-column cursor math). Keep the cursor visible.
+        let cols = size().map(|(w, _)| w as usize).unwrap_or(80).max(1);
+        let win = cols.saturating_sub(label_cols as usize + 1).max(8);
+        let start = if pos >= win { pos - win + 1 } else { 0 };
+        let end = (start + win).min(buf.len());
+        let visible: String = buf[start..end].iter().collect();
         if execute!(out, cursor::MoveToColumn(0), Clear(ClearType::CurrentLine)).is_err() {
             break Edit::Unsupported;
         }
-        // The label is dimmed (gray); the editable value renders normal. The
-        // ANSI codes are zero-width, so `prompt_cols` (plain char count) stays
-        // the correct cursor column.
-        let _ = write!(out, "{}{prompt}{}{line}", dim(), rst());
-        let _ = execute!(out, cursor::MoveToColumn(prompt_cols + pos as u16));
+        // Redraw "label: " (gray) + the visible window of the command (normal).
+        let _ = write!(out, "{}{label}:{} {visible}", dim(), rst());
+        let _ = execute!(out, cursor::MoveToColumn(label_cols + (pos - start) as u16));
         let _ = out.flush();
 
         match event::read() {
@@ -266,31 +230,14 @@ fn editable(prompt: &str, initial: &str) -> Edit {
     }
 }
 
-/// Plain-prompt fallback when raw mode is unavailable: bracketed default, Enter
-/// accepts. Mirrors the pre-readline behavior so init still works anywhere.
-fn fallback_line(label: &str, default: &str) -> String {
-    if default.is_empty() {
-        print!("{label} [runner default]: ");
-    } else {
-        print!("{label} [{default}]: ");
-    }
+/// Plain-prompt fallback when raw mode is unavailable: shows the current value in
+/// brackets, Enter keeps it. Mirrors the editor's keep-or-replace semantics so
+/// init still works on terminals without raw mode.
+fn fallback_line(label: &str, current: &str) -> String {
+    print!("{label} [{current}]: ");
     let _ = io::stdout().flush();
     match read_line() {
         Some(s) if !s.is_empty() => s,
-        _ => default.to_string(),
-    }
-}
-
-/// Plain-prompt fallback for the runner choice (raw mode unavailable).
-fn fallback_choice(choices: &[&str], default: &str) -> String {
-    loop {
-        print!("Runner [{}] ({default}): ", choices.join("/"));
-        let _ = io::stdout().flush();
-        match read_line() {
-            None => return default.to_string(),
-            Some(s) if s.is_empty() => return default.to_string(),
-            Some(s) if choices.contains(&s.as_str()) => return s,
-            Some(s) => println!("  '{s}' is not one of: {}", choices.join(", ")),
-        }
+        _ => current.to_string(),
     }
 }

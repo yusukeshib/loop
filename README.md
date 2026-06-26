@@ -55,24 +55,25 @@ convention, not a dependency of looop itself.
 ## Usage
 
 ```sh
-looop init          # interactive setup: pick the runner (claude/codex/opencode/pi)
+looop init          # interactive setup: edit the agent commands (tick/interactive/resume)
 looop up            # start the autonomous pulse (detached)
 looop watch         # live log + running-session selector
 looop down          # stop the pulse and all workers
 ```
 
-`looop init` asks a few questions (runner, then the tick/worker models), each
-prefilled with a sensible default (claude → sonnet/opus), and writes the runner
-wiring. It is **required before `looop up`** — the pulse refuses to start until you
-have picked a runner, so the agent CLI driving every tick and worker is an
-explicit choice rather than a silent default.
+`looop init` lets you edit the three command strings of the wiring
+(`tick` / `interactive` / `resume`), each prefilled with the current value (or the
+built-in **claude** default on first run). It is **required before `looop up`** —
+the pulse refuses to start until the wiring exists, so the agent CLI driving every
+tick and worker is an explicit choice rather than a silent default. See
+[Configuration](#configuration) for ready-made wirings to paste in.
 
 ### First run
 
 looop is steered by an agent, not by you typing commands. The first-run flow:
 
-1. **`looop init`** — pick the runner (the wizard defaults to claude). Required
-   before the pulse will start.
+1. **`looop init`** — accept the claude default, or paste a different runner's
+   wiring (see [Configuration](#configuration)). Required before the pulse starts.
 2. **Start a concierge.** Launch an agent and ask it to drive looop for you:
    ```sh
    claude   # or pi / codex / opencode — then say:
@@ -92,3 +93,61 @@ looop is steered by an agent, not by you typing commands. The first-run flow:
 You can also skip the concierge entirely: run `looop up` yourself and steer by
 hand (edit goals/PLAYBOOK, or use the `looop _ …` verbs). See `looop help` for the
 full command reference and design manual.
+
+## Configuration
+
+The config (`$LOOOP_CONFIG`, default `~/.config/looop/config.json`) is just **three
+shell commands** — looop is glue and knows nothing about any specific runner:
+
+| Key           | Role                                                                                 |
+| ------------- | ------------------------------------------------------------------------------------ |
+| `tick`        | run ONE disposable decision. The tick prompt arrives on **stdin**; must run unattended (no permission prompts — the detached pulse can't answer them) and emit a structured event stream looop can render. |
+| `interactive` | launch a worker agent. `{{prompt_file}}` is substituted with the worker's prompt file path. |
+| `resume`      | re-attach a worker session.                                                          |
+
+`looop init` just lets you edit these three strings. The built-in default is
+`claude`; paste one of the wirings below (or your own) to switch runner.
+
+**claude** (default)
+
+```json
+{
+  "tick": "claude -p --output-format stream-json --verbose --dangerously-skip-permissions --model sonnet",
+  "interactive": "claude --dangerously-skip-permissions --model opus \"$(cat {{prompt_file}})\"",
+  "resume": "claude --resume"
+}
+```
+
+**codex**
+
+```json
+{
+  "tick": "codex exec --json --dangerously-bypass-approvals-and-sandbox",
+  "interactive": "codex --dangerously-bypass-approvals-and-sandbox \"$(cat {{prompt_file}})\"",
+  "resume": "codex resume"
+}
+```
+
+**opencode** (best-effort — verify against your installed version)
+
+```json
+{
+  "tick": "opencode run",
+  "interactive": "opencode \"$(cat {{prompt_file}})\"",
+  "resume": "opencode --continue"
+}
+```
+
+**pi**
+
+```json
+{
+  "tick": "pi -p --mode json -ne --model claude-sonnet-4-5 --thinking low 'Execute the looop tick instructions provided on stdin.'",
+  "interactive": "pi --model claude-opus-4-8 --thinking medium @{{prompt_file}}",
+  "resume": "pi --session"
+}
+```
+
+Model ids above are examples. For claude, `sonnet`/`opus` are aliases that always
+resolve to the latest of each; pin a specific version (e.g.
+`--model claude-opus-4-1`) if you need reproducibility.
