@@ -2,6 +2,11 @@
 //! intent), not just a subcommand list. The static narrative lives in
 //! `manual.txt` and is embedded at compile time; the Usage / Paths sections are
 //! rendered here with live config/data paths (mirroring the bash heredoc).
+//!
+//! A bare `looop` does NOT land here — it shows clap's auto-generated short
+//! command summary (see main.rs). This full manual is reserved for the explicit
+//! `help` verb / `--help` front door, because it is a hand-written design
+//! narrative clap cannot produce.
 
 use crate::paths::Paths;
 
