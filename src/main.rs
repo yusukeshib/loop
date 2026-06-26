@@ -124,7 +124,10 @@ fn dispatch(paths: &Paths, cmd: Option<cli::Cmd>) -> Result<ExitCode> {
         // Not gated: `looop init` configures the runner BEFORE its CLI need be
         // installed, so we must not preflight the runner binary here.
         Cmd::Init => init::cmd_init(paths),
-        Cmd::Up(a) => gated(&|| service::cmd_up(paths, a.json)),
+        // Not gated here: cmd_up checks `init` FIRST (so an uninitialized user is
+        // told to run `looop init`, not nagged about a missing runner they may
+        // not even want), then runs the deps preflight itself.
+        Cmd::Up(a) => service::cmd_up(paths, a.json),
         Cmd::Down => gated(&|| service::cmd_down(paths)),
         // Read-only observer TUI — no deps gate (only reads logs + lists
         // sessions, never launches an agent).

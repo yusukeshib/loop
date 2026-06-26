@@ -6,11 +6,13 @@
 //! how to launch a worker agent; {{prompt_file}} is substituted with the worker's
 //! prompt file. `resume` = how to re-attach a worker session.
 //!
-//! NOT INITIALIZED = no config file. The loop still runs: `Config::load` falls
-//! back to the inline `DEFAULT_CONFIG` (claude) so a fresh checkout works out of
-//! the box. `looop init` lets the operator pick another runner
-//! (claude/codex/opencode/pi) and prefilled models, then writes the wiring.
-//! Switch later by re-running `looop init` or editing the three commands by hand.
+//! NOT INITIALIZED = no config file. `looop up` REFUSES to start the pulse in
+//! that state and tells the operator to run `looop init`, which picks a runner
+//! (claude/codex/opencode/pi, claude by default) + prefilled models and writes
+//! the wiring. The inline `DEFAULT_CONFIG` (claude) remains only as a safety net
+//! for `Config::load` (e.g. a `_` verb that runs without a file); the front-door
+//! `up` path is gated on init. Switch later by re-running `looop init` or editing
+//! the three commands by hand.
 //!
 //! TICK OUTPUT (H3): `runner::run_streamed` renders every tick IN-PROCESS off the
 //! runner's NDJSON stdout. Both runners therefore need their structured stream
@@ -214,9 +216,9 @@ fn strip_fmt_seam(cmd: &str) -> String {
     cmd.to_string()
 }
 
-/// True once the operator has run `looop init` (the config file exists). When
-/// false the loop runs on the inline `DEFAULT_CONFIG`; callers can nudge the user
-/// toward `looop init` without blocking.
+/// True once the operator has run `looop init` (the config file exists). `looop
+/// up` gates on this and refuses to start the pulse when false, directing the
+/// user to `looop init`.
 pub fn is_initialized(paths: &Paths) -> bool {
     paths.config.is_file()
 }

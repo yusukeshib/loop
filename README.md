@@ -63,14 +63,16 @@ looop down          # stop the pulse and all workers
 
 `looop init` asks a few questions (runner, then the tick/worker models), each
 prefilled with a sensible default (claude → sonnet/opus), and writes the runner
-wiring. It is optional: without it the loop runs on the built-in claude defaults,
-but running it lets you choose another runner.
+wiring. It is **required before `looop up`** — the pulse refuses to start until you
+have picked a runner, so the agent CLI driving every tick and worker is an
+explicit choice rather than a silent default.
 
 ### First run
 
 looop is steered by an agent, not by you typing commands. The first-run flow:
 
-1. **`looop init`** — pick the runner (or skip it and accept the claude default).
+1. **`looop init`** — pick the runner (the wizard defaults to claude). Required
+   before the pulse will start.
 2. **Start a concierge.** Launch an agent and ask it to drive looop for you:
    ```sh
    claude   # or pi / codex / opencode — then say:

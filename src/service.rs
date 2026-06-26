@@ -18,10 +18,19 @@ use std::time::Duration;
 /// itself from there; steer by editing goals/PLAYBOOK or run a client to watch
 /// and relay (`looop watch`, or a pi/claude session pointed at `looop _ state`).
 pub fn cmd_up(paths: &Paths, json: bool) -> Result<ExitCode> {
+    // Hard gate: refuse to start the pulse until the operator has run `looop
+    // init`. The runner wiring is a deliberate choice (which agent CLI drives
+    // every tick + worker), so we make it explicit rather than silently booting
+    // on a default the user never picked.
     if !config::is_initialized(paths) {
-        println!("looop: not initialized — running on built-in claude defaults.");
-        println!("       run `looop init` to choose your runner (claude/codex/opencode/pi).");
+        eprintln!("looop: not initialized — run `looop init` first.");
+        eprintln!("       it picks your runner (claude/codex/opencode/pi) and writes the wiring.");
+        return Ok(ExitCode::from(1));
     }
+    // Initialized — now preflight the configured runner before spawning the pulse
+    // (the same gate the `_` verbs get via dispatch, run here after the init
+    // check so the messages surface in the right order).
+    crate::deps::require_deps(paths)?;
     if session::is_alive(paths, PULSE_SESSION) {
         println!("looop: pulse already running");
     } else {
