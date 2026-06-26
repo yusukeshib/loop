@@ -52,12 +52,12 @@ fn is_executable(_p: &std::path::Path) -> bool {
 pub fn require_deps(paths: &Paths) -> Result<()> {
     let mut missing: Vec<(String, &'static str)> = Vec::new();
 
-    // looop runs its per-beat decide + launches workers through the configured runner's
-    // `interactive` command (pi/claude), so a missing runner binary is a hard
-    // prereq. Resolve from $LOOOP_CONFIG when present, else the inline default,
-    // and check its first token.
+    // looop runs its per-beat decide + launches workers through the configured
+    // runner's `worker_command`, so a missing runner binary is a hard prereq.
+    // Resolve from $LOOOP_CONFIG when present, else the inline default, and check
+    // its first token.
     if let Ok(cfg) = Config::load(paths)
-        && let Some(cmd) = cfg.runner_cmd("interactive")
+        && let Some(cmd) = cfg.runner_cmd("worker_command")
         && let Some(bin) = cmd.split_whitespace().next()
         && !bin.is_empty()
         && !on_path(bin)

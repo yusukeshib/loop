@@ -1,9 +1,9 @@
 //! `looop init` — the interactive setup.
 //!
-//! Lets you edit the THREE command strings of the wiring (`tick`, `interactive`,
-//! `resume`) and writes them to $LOOOP_CONFIG. Each prompt is prefilled with the
-//! CURRENT value (or the inline claude default on first run), so re-running init
-//! shows what you have now and you tweak it in place.
+//! Lets you edit the TWO command strings of the wiring (`tick_command`,
+//! `worker_command`) and writes them to $LOOOP_CONFIG. Each prompt is prefilled
+//! with the CURRENT value (or the inline claude default on first run), so
+//! re-running init shows what you have now and you tweak it in place.
 //!
 //! NO per-runner knowledge lives here — looop is glue. We seed the prompts from
 //! the claude default (config.rs) and otherwise just edit whatever strings the
@@ -75,7 +75,7 @@ pub fn cmd_init(paths: &Paths) -> Result<ExitCode> {
         edited.push(val);
     }
 
-    let json = config::wiring_json(&edited[0], &edited[1], &edited[2]);
+    let json = config::wiring_json(&edited[0], &edited[1]);
     config::write(paths, &json)?;
 
     // The runner label is just the first token of the tick command — for display.

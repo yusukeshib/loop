@@ -55,14 +55,14 @@ convention, not a dependency of looop itself.
 ## Usage
 
 ```sh
-looop init          # interactive setup: edit the agent commands (tick/interactive/resume)
+looop init          # interactive setup: edit the agent commands (tick_command/worker_command)
 looop up            # start the autonomous pulse (detached)
 looop watch         # live log + running-session selector
 looop down          # stop the pulse and all workers
 ```
 
-`looop init` lets you edit the three command strings of the wiring
-(`tick` / `interactive` / `resume`), each prefilled with the current value (or the
+`looop init` lets you edit the two command strings of the wiring
+(`tick_command` / `worker_command`), each prefilled with the current value (or the
 built-in **claude** default on first run). It is **required before `looop up`** —
 the pulse refuses to start until the wiring exists, so the agent CLI driving every
 tick and worker is an explicit choice rather than a silent default. See
@@ -96,25 +96,25 @@ full command reference and design manual.
 
 ## Configuration
 
-The config (`$LOOOP_CONFIG`, default `~/.config/looop/config.json`) is just **three
+The config (`$LOOOP_CONFIG`, default `~/.config/looop/config.json`) is just **two
 shell commands** — looop is glue and knows nothing about any specific runner:
 
-| Key           | Role                                                                                 |
-| ------------- | ------------------------------------------------------------------------------------ |
-| `tick`        | run ONE disposable decision. The tick prompt arrives on **stdin**; must run unattended (no permission prompts — the detached pulse can't answer them) and emit a structured event stream looop can render. |
-| `interactive` | launch a worker agent. `{{prompt_file}}` is substituted with the worker's prompt file path. |
-| `resume`      | re-attach a worker session.                                                          |
+| Key              | Role                                                                              |
+| ---------------- | --------------------------------------------------------------------------------- |
+| `tick_command`   | run ONE disposable decision. The tick prompt arrives on **stdin**; must run unattended (no permission prompts — the detached pulse can't answer them) and emit a structured event stream looop can render. |
+| `worker_command` | launch a worker agent. `{{prompt_file}}` is substituted with the worker's prompt file path. |
 
-`looop init` just lets you edit these three strings. The built-in default is
-`claude`; paste one of the wirings below (or your own) to switch runner.
+(Re-attaching to a worker is handled in-process by looop, so there is no `resume`
+command to configure.) `looop init` just lets you edit these two strings. The
+built-in default is `claude`; paste one of the wirings below (or your own) to
+switch runner.
 
 **claude** (default)
 
 ```json
 {
-  "tick": "claude -p --output-format stream-json --verbose --dangerously-skip-permissions --model sonnet",
-  "interactive": "claude --dangerously-skip-permissions --model opus \"$(cat {{prompt_file}})\"",
-  "resume": "claude --resume"
+  "tick_command": "claude -p --output-format stream-json --verbose --dangerously-skip-permissions --model sonnet",
+  "worker_command": "claude --dangerously-skip-permissions --model opus \"$(cat {{prompt_file}})\""
 }
 ```
 
@@ -122,9 +122,8 @@ shell commands** — looop is glue and knows nothing about any specific runner:
 
 ```json
 {
-  "tick": "codex exec --json --dangerously-bypass-approvals-and-sandbox",
-  "interactive": "codex --dangerously-bypass-approvals-and-sandbox \"$(cat {{prompt_file}})\"",
-  "resume": "codex resume"
+  "tick_command": "codex exec --json --dangerously-bypass-approvals-and-sandbox",
+  "worker_command": "codex --dangerously-bypass-approvals-and-sandbox \"$(cat {{prompt_file}})\""
 }
 ```
 
@@ -132,9 +131,8 @@ shell commands** — looop is glue and knows nothing about any specific runner:
 
 ```json
 {
-  "tick": "opencode run",
-  "interactive": "opencode \"$(cat {{prompt_file}})\"",
-  "resume": "opencode --continue"
+  "tick_command": "opencode run",
+  "worker_command": "opencode \"$(cat {{prompt_file}})\""
 }
 ```
 
@@ -142,9 +140,8 @@ shell commands** — looop is glue and knows nothing about any specific runner:
 
 ```json
 {
-  "tick": "pi -p --mode json -ne --model claude-sonnet-4-5 --thinking low 'Execute the looop tick instructions provided on stdin.'",
-  "interactive": "pi --model claude-opus-4-8 --thinking medium @{{prompt_file}}",
-  "resume": "pi --session"
+  "tick_command": "pi -p --mode json -ne --model claude-sonnet-4-5 --thinking low 'Execute the looop tick instructions provided on stdin.'",
+  "worker_command": "pi --model claude-opus-4-8 --thinking medium @{{prompt_file}}"
 }
 ```
 

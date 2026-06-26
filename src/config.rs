@@ -1,14 +1,15 @@
 //! Runner-wiring config — the only thing that needs "installing".
 //!
-//! Written to $LOOOP_CONFIG by `looop init` (the interactive setup wizard). It
-//! wires up ONE runner with three commands at the top level (no profiles): `tick`
-//! = how to run one disposable AI move (stdin = the tick prompt). `interactive` =
-//! how to launch a worker agent; {{prompt_file}} is substituted with the worker's
-//! prompt file. `resume` = how to re-attach a worker session.
+//! Written to $LOOOP_CONFIG by `looop init`. It wires up ONE runner with two
+//! commands at the top level (no profiles): `tick_command` = how to run one
+//! disposable AI move (stdin = the tick prompt); `worker_command` = how to launch
+//! a worker agent ({{prompt_file}} is substituted with the worker's prompt file).
+//! (Re-attaching to a worker is done in-process via babysit, so there is no
+//! `resume` command.)
 //!
 //! NOT INITIALIZED = no config file. `looop up` REFUSES to start the pulse in
 //! that state and tells the operator to run `looop init`, which lets you EDIT the
-//! three command strings (prefilled with the current values, or the claude
+//! two command strings (prefilled with the current values, or the claude
 //! default on first run) and writes the wiring. The inline `DEFAULT_CONFIG`
 //! (claude) is the only wiring this code knows about; it is both the first-run
 //! default and the safety net for `Config::load` (e.g. a `_` verb that runs
@@ -45,24 +46,22 @@ use std::fs;
 /// `| "$LOOOP_BIN" _ fmt` seam, since output formatting runs in-process
 /// (see `runner::run_streamed`).
 pub const DEFAULT_CONFIG: &str = r#"{
-  "tick": "claude -p --output-format stream-json --verbose --dangerously-skip-permissions --model sonnet",
-  "interactive": "claude --dangerously-skip-permissions --model opus \"$(cat {{prompt_file}})\"",
-  "resume": "claude --resume"
+  "tick_command": "claude -p --output-format stream-json --verbose --dangerously-skip-permissions --model sonnet",
+  "worker_command": "claude --dangerously-skip-permissions --model opus \"$(cat {{prompt_file}})\""
 }
 "#;
 
-/// The three keys a wiring is made of, in the order `looop init` prompts for
-/// them. Editing-only metadata: `looop` itself reads them via [`Config`].
-pub const KEYS: [&str; 3] = ["tick", "interactive", "resume"];
+/// The wiring keys `looop init` prompts for, in order. Editing-only metadata:
+/// `looop` itself reads them via [`Config::runner_cmd`].
+pub const KEYS: [&str; 2] = ["tick_command", "worker_command"];
 
-/// Assemble the wiring JSON from the three command strings the user supplied to
+/// Assemble the wiring JSON from the two command strings the user supplied to
 /// `looop init`. Pure serialization — NO per-runner knowledge lives here; the
 /// commands are whatever the operator typed (seeded from the claude default).
-pub fn wiring_json(tick: &str, interactive: &str, resume: &str) -> String {
+pub fn wiring_json(tick: &str, worker: &str) -> String {
     let v = serde_json::json!({
-        "tick": tick,
-        "interactive": interactive,
-        "resume": resume,
+        "tick_command": tick,
+        "worker_command": worker,
     });
     serde_json::to_string_pretty(&v).expect("config json") + "\n"
 }
@@ -88,22 +87,34 @@ impl Config {
         Ok(Config { root })
     }
 
-    /// A short label for the configured runner — the first token of the `tick`
+    /// A short label for the configured runner — the first token of the tick
     /// command (e.g. `pi`, `claude`). For log lines only.
     pub fn runner_label(&self) -> String {
-        self.runner_cmd("tick")
-            .or_else(|| self.runner_cmd("interactive"))
+        self.runner_cmd("tick_command")
+            .or_else(|| self.runner_cmd("worker_command"))
             .and_then(|c| c.split_whitespace().next().map(str::to_owned))
             .unwrap_or_else(|| "runner".into())
     }
 
-    /// `.<key>` — e.g. the `tick` / `interactive` / `resume` command.
+    /// Fetch a wiring command by key (`tick_command` / `worker_command`).
+    ///
+    /// BACK-COMPAT: the keys were once the bare `tick` / `interactive` (and an
+    /// unused `resume`). A new key falls back to its pre-rename name, so configs
+    /// written before the rename keep working without a re-init.
     ///
     /// Any trailing `| "$LOOOP_BIN" _ fmt` seam from a pre-in-process-metering
-    /// config is stripped here (`strip_fmt_seam`), so stored configs written
-    /// before the formatter moved in-process keep working without re-seeding.
+    /// config is also stripped here (`strip_fmt_seam`).
     pub fn runner_cmd(&self, key: &str) -> Option<String> {
-        self.root.get(key)?.as_str().map(strip_fmt_seam)
+        let legacy = match key {
+            "tick_command" => Some("tick"),
+            "worker_command" => Some("interactive"),
+            _ => None,
+        };
+        self.root
+            .get(key)
+            .or_else(|| legacy.and_then(|l| self.root.get(l)))?
+            .as_str()
+            .map(strip_fmt_seam)
     }
 }
 
@@ -186,22 +197,38 @@ mod tests {
             root: serde_json::from_str(super::DEFAULT_CONFIG).expect("default config parses"),
         };
         assert_eq!(cfg.runner_label(), "claude");
-        let inter = cfg.runner_cmd("interactive").unwrap();
+        let worker = cfg.runner_cmd("worker_command").unwrap();
         // The worker prompt placeholder survives JSON round-trip un-escaped.
-        assert!(inter.contains("{{prompt_file}}"));
-        assert!(inter.contains("$(cat"));
+        assert!(worker.contains("{{prompt_file}}"));
+        assert!(worker.contains("$(cat"));
     }
 
     #[test]
-    fn wiring_json_round_trips_the_three_commands() {
-        let json = super::wiring_json("T cmd", "I {{prompt_file}}", "R cmd");
+    fn wiring_json_round_trips_the_two_commands() {
+        let json = super::wiring_json("T cmd", "W {{prompt_file}}");
         let cfg = super::Config {
             root: serde_json::from_str(&json).expect("wiring json parses"),
         };
-        assert_eq!(cfg.runner_cmd("tick").unwrap(), "T cmd");
-        assert_eq!(cfg.runner_cmd("interactive").unwrap(), "I {{prompt_file}}");
-        assert_eq!(cfg.runner_cmd("resume").unwrap(), "R cmd");
+        assert_eq!(cfg.runner_cmd("tick_command").unwrap(), "T cmd");
+        assert_eq!(
+            cfg.runner_cmd("worker_command").unwrap(),
+            "W {{prompt_file}}"
+        );
         // Keys match the documented edit order.
-        assert_eq!(super::KEYS, ["tick", "interactive", "resume"]);
+        assert_eq!(super::KEYS, ["tick_command", "worker_command"]);
+    }
+
+    #[test]
+    fn runner_cmd_falls_back_to_legacy_keys() {
+        // A pre-rename config (bare keys + the now-unused `resume`) still reads.
+        let cfg = super::Config {
+            root: serde_json::json!({
+                "tick": "old tick",
+                "interactive": "old worker",
+                "resume": "old resume"
+            }),
+        };
+        assert_eq!(cfg.runner_cmd("tick_command").unwrap(), "old tick");
+        assert_eq!(cfg.runner_cmd("worker_command").unwrap(), "old worker");
     }
 }
