@@ -145,8 +145,8 @@ shell commands** — looop is glue and knows nothing about any specific runner:
 
 | Key              | Role                                                                                     |
 | ---------------- | ---------------------------------------------------------------------------------------- |
-| `tick_command`   | run ONE disposable decision. The prompt arrives on **stdin**; must run unattended (no permission prompts — the detached pulse can't answer them) and emit a structured event stream looop can render. |
-| `worker_command` | launch a worker agent. `{{prompt_file}}` is substituted with the worker's prompt file path. |
+| `tick_command`   | run ONE disposable decision. The prompt is passed via the `{{prompt_file}}` placeholder (substituted with the prompt file path — read it with `$(cat {{prompt_file}})` or `@{{prompt_file}}`). If you omit the placeholder the prompt is piped in on **stdin** instead. Must run unattended (no permission prompts — the detached pulse can't answer them) and emit a structured event stream looop can render. |
+| `worker_command` | launch a worker agent. Same `{{prompt_file}}` placeholder, substituted with the worker's prompt file path. (A worker can't use the stdin fallback — stdin is its live attach TTY.) |
 
 `looop init` just lets you edit these two strings. The built-in default is
 `claude`; paste one of the wirings below (or your own) to switch runner.
@@ -155,7 +155,7 @@ shell commands** — looop is glue and knows nothing about any specific runner:
 
 ```json
 {
-  "tick_command": "claude -p --output-format stream-json --verbose --dangerously-skip-permissions --model sonnet",
+  "tick_command": "claude -p --output-format stream-json --verbose --dangerously-skip-permissions --model sonnet \"$(cat {{prompt_file}})\"",
   "worker_command": "claude --dangerously-skip-permissions --model opus \"$(cat {{prompt_file}})\""
 }
 ```
@@ -164,7 +164,7 @@ shell commands** — looop is glue and knows nothing about any specific runner:
 
 ```json
 {
-  "tick_command": "codex exec --json --dangerously-bypass-approvals-and-sandbox",
+  "tick_command": "codex exec --json --dangerously-bypass-approvals-and-sandbox \"$(cat {{prompt_file}})\"",
   "worker_command": "codex --dangerously-bypass-approvals-and-sandbox \"$(cat {{prompt_file}})\""
 }
 ```
@@ -173,7 +173,7 @@ shell commands** — looop is glue and knows nothing about any specific runner:
 
 ```json
 {
-  "tick_command": "opencode run",
+  "tick_command": "opencode run \"$(cat {{prompt_file}})\"",
   "worker_command": "opencode \"$(cat {{prompt_file}})\""
 }
 ```
@@ -182,7 +182,7 @@ shell commands** — looop is glue and knows nothing about any specific runner:
 
 ```json
 {
-  "tick_command": "pi -p --mode json -ne --model claude-sonnet-4-5 --thinking low 'Execute the looop tick instructions provided on stdin.'",
+  "tick_command": "pi -p --mode json -ne --model claude-sonnet-4-5 --thinking low @{{prompt_file}}",
   "worker_command": "pi --model claude-opus-4-8 --thinking medium @{{prompt_file}}"
 }
 ```

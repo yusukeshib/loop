@@ -18,15 +18,20 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Run `tick_cmd` (a shell pipeline) under `bash -c`, with cwd at the data dir
-/// and stdin from `prompt_file`. stdout+stderr are merged; each line is rendered
-/// via `fmt::format_line`, stamped, and written to every `tee` file (the replay
-/// archive). Returns whether the runner exited successfully.
+/// Run `tick_cmd` (a shell pipeline) under `bash -c`, with cwd at the data dir.
+/// The tick prompt reaches the runner one of two ways, mirroring the worker:
+/// if `tick_cmd` contains the `{{prompt_file}}` placeholder it is substituted
+/// with the prompt file's path (so the config can read it via `$(cat …)` /
+/// `@file`, symmetric with `worker_command`); otherwise the file is piped in as
+/// stdin (the original, zero-config path). stdout+stderr are merged; each line
+/// is rendered via `fmt::format_line`, stamped, and written to every `tee` file
+/// (the replay archive). Returns whether the runner exited successfully.
 pub fn run_streamed(paths: &Paths, tick_cmd: &str, prompt_file: &Path, tee: &[PathBuf]) -> bool {
-    let stdin = match File::open(prompt_file) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
+    // When the operator references the prompt explicitly via `{{prompt_file}}`
+    // (the same placeholder `worker_command` uses), substitute the path and
+    // leave stdin alone. Otherwise fall back to feeding the file via stdin.
+    let has_placeholder = tick_cmd.contains("{{prompt_file}}");
+    let tick_cmd = tick_cmd.replace("{{prompt_file}}", &prompt_file.to_string_lossy());
 
     // `{ …; } 2>&1` merges the whole pipeline's stderr into stdout in order, so
     // a single pipe carries everything (Rust can't easily interleave two pipes).
@@ -39,8 +44,15 @@ pub fn run_streamed(paths: &Paths, tick_cmd: &str, prompt_file: &Path, tee: &[Pa
     cmd.arg("-c")
         .arg(&script)
         .current_dir(&paths.data_dir)
-        .stdin(Stdio::from(stdin))
         .stdout(Stdio::piped());
+
+    if !has_placeholder {
+        let stdin = match File::open(prompt_file) {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+        cmd.stdin(Stdio::from(stdin));
+    }
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
