@@ -2,10 +2,13 @@
 //!
 //! Written to $LOOOP_CONFIG by `looop init`. It wires up ONE runner with two
 //! commands at the top level (no profiles): `tick_command` = how to run one
-//! disposable AI move (stdin = the tick prompt); `worker_command` = how to launch
-//! a worker agent ({{prompt_file}} is substituted with the worker's prompt file).
-//! (Re-attaching to a worker is done in-process via babysit, so there is no
-//! `resume` command.)
+//! disposable AI move; `worker_command` = how to launch a worker agent. BOTH
+//! commands take the prompt the same way: the `{{prompt_file}}` placeholder is
+//! substituted with the prompt file's path (read it via `$(cat {{prompt_file}})`
+//! or `@{{prompt_file}}`). For the tick ONLY, omitting the placeholder is also
+//! allowed — then the prompt file is piped in as stdin (the zero-config path); a
+//! worker can't use stdin because that is its live attach TTY. (Re-attaching to a
+//! worker is done in-process via babysit, so there is no `resume` command.)
 //!
 //! NOT INITIALIZED = no config file. `looop up` REFUSES to start the pulse in
 //! that state and tells the operator to run `looop init`, which lets you EDIT the
@@ -46,7 +49,7 @@ use std::fs;
 /// `| "$LOOOP_BIN" _ fmt` seam, since output formatting runs in-process
 /// (see `runner::run_streamed`).
 pub const DEFAULT_CONFIG: &str = r#"{
-  "tick_command": "claude -p --output-format stream-json --verbose --dangerously-skip-permissions --model sonnet",
+  "tick_command": "claude -p --output-format stream-json --verbose --dangerously-skip-permissions --model sonnet \"$(cat {{prompt_file}})\"",
   "worker_command": "claude --dangerously-skip-permissions --model opus \"$(cat {{prompt_file}})\""
 }
 "#;
@@ -201,6 +204,11 @@ mod tests {
         // The worker prompt placeholder survives JSON round-trip un-escaped.
         assert!(worker.contains("{{prompt_file}}"));
         assert!(worker.contains("$(cat"));
+        // The tick now passes its prompt the SAME way as the worker: via the
+        // `{{prompt_file}}` placeholder rather than relying on the stdin path.
+        let tick = cfg.runner_cmd("tick_command").unwrap();
+        assert!(tick.contains("{{prompt_file}}"));
+        assert!(tick.contains("$(cat"));
     }
 
     #[test]
