@@ -40,19 +40,6 @@ pub struct Ask {
     pub ts: u64,
 }
 
-/// Reject an id segment that could escape the mailbox dirs or hit a dotfile.
-fn safe(seg: &str) -> Result<()> {
-    if seg.is_empty()
-        || seg.contains('/')
-        || seg.contains('\\')
-        || seg.starts_with('.')
-        || seg == ".."
-    {
-        bail!("invalid id {seg:?}");
-    }
-    Ok(())
-}
-
 /// Allocate the next ask id for a worker: `<worker>-<n>` where `n` is one past
 /// the highest existing index across BOTH asks/ and answers/ (so an answered
 /// ask's id is never reused while its record lingers).
@@ -135,7 +122,7 @@ pub(crate) fn ask(
     reference: &str,
     options: &[String],
 ) -> Result<String> {
-    safe(worker)?;
+    util::safe_segment("worker id", worker)?;
     if prompt.trim().is_empty() {
         bail!("ask: empty --prompt");
     }
@@ -207,7 +194,7 @@ pub fn cmd_answer(paths: &Paths, args: &crate::cli::AnswerArgs) -> Result<ExitCo
 /// unknown ask id, and (without `force`) an already-answered one. Transport-
 /// agnostic: no stdin, no stdout.
 pub(crate) fn answer(paths: &Paths, ask_id: &str, text: &str, force: bool) -> Result<()> {
-    safe(ask_id)?;
+    util::safe_segment("ask id", ask_id)?;
     if text.trim().is_empty() {
         bail!("answer: empty text");
     }

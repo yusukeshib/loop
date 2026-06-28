@@ -16,19 +16,6 @@ use crate::util;
 use anyhow::{Result, bail};
 use std::process::ExitCode;
 
-/// Reject a claim name that could escape claims/ or hit a dotfile.
-fn safe_name(name: &str) -> Result<()> {
-    if name.is_empty()
-        || name.contains('/')
-        || name.contains('\\')
-        || name.starts_with('.')
-        || name == ".."
-    {
-        bail!("invalid claim name {name:?}");
-    }
-    Ok(())
-}
-
 /// The `.session` recorded in a claim, or empty if absent/unparseable.
 fn claim_holder(store: &impl StateStore, key: &Key) -> String {
     store
@@ -78,7 +65,7 @@ pub(crate) fn claim(
     session: Option<&str>,
 ) -> Result<crate::contract::ClaimOutcome> {
     use crate::contract::ClaimOutcome;
-    safe_name(name)?;
+    util::safe_segment("claim name", name)?;
     let session = session_or_env(session);
     let store = FileStore::new(paths);
     let key = Key::Claim(name.to_string());
@@ -123,7 +110,7 @@ pub fn cmd_unclaim(paths: &Paths, args: &crate::cli::ClaimArgs) -> Result<ExitCo
 /// lease is now gone (unowned, ours, or a dead holder — all idempotent);
 /// `Ok(false)` when a DIFFERENT live session holds it. Transport-agnostic.
 pub(crate) fn unclaim(paths: &Paths, name: &str, session: Option<&str>) -> Result<bool> {
-    safe_name(name)?;
+    util::safe_segment("claim name", name)?;
     let session = session_or_env(session);
     let store = FileStore::new(paths);
     let key = Key::Claim(name.to_string());

@@ -68,13 +68,6 @@ fn backoff_delay(fails: u32) -> u64 {
         .min(BACKOFF_CAP_SECS)
 }
 
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 fn backoff_path(paths: &Paths) -> PathBuf {
     paths.data_dir.join(".tick-backoff")
 }
@@ -101,7 +94,8 @@ fn clear_backoff(paths: &Paths) {
 /// the world moving off the failing state (the gate in [`tick`]) — resets it.
 fn record_backoff(paths: &Paths, hash: &str) -> u32 {
     let fails = read_backoff(paths).map(|(_, n, _)| n + 1).unwrap_or(1);
-    let body = serde_json::json!({ "hash": hash, "fails": fails, "ts": now_unix() }).to_string();
+    let body =
+        serde_json::json!({ "hash": hash, "fails": fails, "ts": util::now_unix() }).to_string();
     let _ = fs::write(backoff_path(paths), body);
     fails
 }
@@ -170,7 +164,7 @@ pub fn tick(paths: &Paths, force: bool) -> TickOutcome {
             clear_backoff(paths);
         } else {
             let wait = backoff_delay(fails);
-            let elapsed = now_unix().saturating_sub(ts);
+            let elapsed = util::now_unix().saturating_sub(ts);
             if elapsed < wait {
                 let remain = wait - elapsed;
                 util::event(

@@ -25,7 +25,7 @@
 use crate::paths::Paths;
 use crate::util;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 fn rel(paths: &Paths, p: &Path) -> String {
     p.strip_prefix(&paths.data_dir)
@@ -48,23 +48,11 @@ pub(crate) fn wake_signal(v: serde_json::Value) -> serde_json::Value {
     }
 }
 
-fn sorted_glob(dir: &Path, ext: &str) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().map(|e| e == ext).unwrap_or(false))
-        .collect();
-    v.sort();
-    v
-}
-
 /// Hash the POLICY half only: PLAYBOOK + goals/*.md, each behind an unambiguous
 /// path marker. Shared by [`world_hash`] and [`policy_hash`].
 fn hash_policy_into(paths: &Paths, buf: &mut Vec<u8>) {
     let mut files = vec![paths.playbook()];
-    files.extend(sorted_glob(&paths.goals_dir(), "md"));
+    files.extend(util::sorted_glob(&paths.goals_dir(), "md"));
     for f in files {
         if !f.is_file() {
             continue;
@@ -85,7 +73,7 @@ pub fn world_hash(paths: &Paths) -> String {
     // Sensor snapshots: hash only the wake SIGNAL. User sensors AND the virtual
     // system sensors (sys-sessions / sys-claims) all land here, so the fleet and
     // leases are diffed through this one loop — no bespoke per-kind hashing.
-    for f in sorted_glob(&paths.snapshots_dir(), "json") {
+    for f in util::sorted_glob(&paths.snapshots_dir(), "json") {
         buf.extend_from_slice(format!("@@ {}\n", rel(paths, &f)).as_bytes());
         let raw = fs::read(&f).unwrap_or_default();
         match serde_json::from_slice::<serde_json::Value>(&raw) {

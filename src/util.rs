@@ -5,6 +5,7 @@
 //! and TZ via chrono, hashing via FNV-1a, liveness via a direct `kill(pid, 0)`
 //! syscall — so the pulse never depends on `date`/`shasum`/`kill` being on PATH.
 
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 static COLOR: OnceLock<bool> = OnceLock::new();
@@ -276,6 +277,37 @@ pub fn write_atomic(path: &std::path::Path, contents: &[u8]) -> std::io::Result<
         let _ = std::fs::remove_file(&tmp);
     }
     res
+}
+
+/// Reject a file-name segment that could escape its directory or hit a dotfile.
+/// The SINGLE source of truth for this security-relevant check — the mailbox
+/// (ask ids), the executor (goal/sensor ids) and the gate (claim names) all
+/// route here so the guard can never drift between call sites. `kind` names the
+/// segment for the error (e.g. "ask id", "claim name", "goal id").
+pub fn safe_segment(kind: &str, seg: &str) -> anyhow::Result<()> {
+    if seg.is_empty()
+        || seg.contains('/')
+        || seg.contains('\\')
+        || seg.starts_with('.')
+        || seg == ".."
+    {
+        anyhow::bail!("invalid {kind} {seg:?}");
+    }
+    Ok(())
+}
+
+/// Sorted absolute paths of `dir/*.<ext>` (best-effort: an unreadable dir yields
+/// an empty list). Sorting makes any derived hash / prompt order-stable.
+pub fn sorted_glob(dir: &Path, ext: &str) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().map(|e| e == ext).unwrap_or(false))
+        .collect();
+    v.sort();
+    v
 }
 
 /// `command -v <cmd>` — true if found and executable on $PATH.
