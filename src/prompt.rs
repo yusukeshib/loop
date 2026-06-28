@@ -8,7 +8,7 @@ use crate::store::{Collection, FileStore, Key, StateStore};
 use crate::util;
 use std::fmt::Write as _;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The immutable minimal norms. Unlike the PLAYBOOK (which the AI may rewrite via
 /// `write_playbook`), this lives in the binary and CANNOT be edited by any move.
@@ -120,18 +120,6 @@ Write your single JSON object to `.decision.json` now, then stop.
 
 "#;
 
-fn sorted_glob(dir: &Path, ext: &str) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().map(|e| e == ext).unwrap_or(false))
-        .collect();
-    v.sort();
-    v
-}
-
 /// The single most-neglected goal: the top-level `goals/*.md` looop has gone
 /// longest without acting on (a goal never acted on outranks any acted one).
 /// `None` when there are no goals. Computed by looop — not left to the AI to scan
@@ -192,7 +180,7 @@ pub fn build_prompt(paths: &Paths, snap_dir: &Path) -> String {
 
     // SENSOR READINGS.
     out.push_str("\n=== SENSOR READINGS ===\n");
-    for o in sorted_glob(snap_dir, "json") {
+    for o in util::sorted_glob(snap_dir, "json") {
         let fname = o
             .file_name()
             .unwrap_or_default()

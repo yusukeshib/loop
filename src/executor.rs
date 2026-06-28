@@ -50,14 +50,6 @@ pub enum Action {
     StartWorker { id: String, prompt: String },
 }
 
-/// Reject a file-name segment that could escape the data dir or hit a dotfile.
-fn safe_segment(kind: &str, id: &str) -> Result<()> {
-    if id.is_empty() || id.contains('/') || id.contains('\\') || id.starts_with('.') || id == ".." {
-        bail!("invalid {kind} id {id:?}");
-    }
-    Ok(())
-}
-
 /// A short, stable word naming the action's category — for the typed stdout
 /// line and the `action` field on the decided event.
 pub fn kind(action: &Action) -> &'static str {
@@ -226,14 +218,14 @@ fn execute_inner(paths: &Paths, action: &Action) -> Result<String> {
         }
 
         Action::WriteGoal { id, body } => {
-            safe_segment("goal", id)?;
+            crate::util::safe_segment("goal id", id)?;
             FileStore::new(paths)
                 .write_atomic(&Key::Goal(id.clone()), &with_trailing_newline(body))?;
             Ok(format!("write-goal {id}"))
         }
 
         Action::ArchiveGoal { id } => {
-            safe_segment("goal", id)?;
+            crate::util::safe_segment("goal id", id)?;
             FileStore::new(paths)
                 .archive(&Key::Goal(id.clone()))
                 .with_context(|| format!("archive_goal {id:?}"))?;
@@ -241,7 +233,7 @@ fn execute_inner(paths: &Paths, action: &Action) -> Result<String> {
         }
 
         Action::WriteSensor { name, script } => {
-            safe_segment("sensor", name)?;
+            crate::util::safe_segment("sensor id", name)?;
             FileStore::new(paths)
                 .write_atomic(&Key::Sensor(name.clone()), &with_trailing_newline(script))?;
             Ok(format!("write-sensor {name}"))
@@ -500,9 +492,13 @@ mod tests {
 
     #[test]
     fn safe_segment_blocks_traversal() {
-        assert!(safe_segment("goal", "ok").is_ok());
+        use crate::util::safe_segment;
+        assert!(safe_segment("goal id", "ok").is_ok());
         for bad in ["", "..", "a/b", ".hidden", "a\\b"] {
-            assert!(safe_segment("goal", bad).is_err(), "should reject {bad:?}");
+            assert!(
+                safe_segment("goal id", bad).is_err(),
+                "should reject {bad:?}"
+            );
         }
     }
 

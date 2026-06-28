@@ -282,15 +282,7 @@ fn sys_goals(paths: &Paths) -> serde_json::Value {
 
 /// Sorted list of `sensors/*.sh`.
 pub fn sensor_scripts(paths: &Paths) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = fs::read_dir(paths.sensors_dir())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().map(|e| e == "sh").unwrap_or(false))
-        .collect();
-    v.sort();
-    v
+    util::sorted_glob(&paths.sensors_dir(), "sh")
 }
 
 /// Run every sensor — user `sensors/*.sh` AND the virtual system probes — into

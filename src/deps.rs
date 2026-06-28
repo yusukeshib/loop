@@ -23,30 +23,6 @@ fn dep_hint(cmd: &str) -> &'static str {
     }
 }
 
-/// True if `cmd` is found on $PATH (equivalent to `command -v`).
-fn on_path(cmd: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| {
-        let candidate = dir.join(cmd);
-        candidate.is_file() && is_executable(&candidate)
-    })
-}
-
-#[cfg(unix)]
-fn is_executable(p: &std::path::Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(p)
-        .map(|m| m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn is_executable(_p: &std::path::Path) -> bool {
-    true
-}
-
 /// Verify hard prerequisites; bail with install hints listing everything
 /// missing at once (so the user fixes it in one pass).
 pub fn require_deps(paths: &Paths) -> Result<()> {
@@ -60,7 +36,7 @@ pub fn require_deps(paths: &Paths) -> Result<()> {
         && let Some(cmd) = cfg.runner_cmd("worker_command")
         && let Some(bin) = cmd.split_whitespace().next()
         && !bin.is_empty()
-        && !on_path(bin)
+        && !crate::util::on_path(bin)
     {
         missing.push((bin.to_string(), dep_hint(bin)));
     }
