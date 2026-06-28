@@ -1,33 +1,85 @@
 # looop
 
-A tiny, portable control plane for agent-driven work. One self-contained binary —
-no database, no server.
+A tiny, portable, autonomous control loop for agent-driven work. One
+self-contained binary — no database, no server, no helper files.
 
-## What it does
+## The idea
 
-`looop` watches the things you care about (GitHub, Linear, Grafana, …) and runs a
-fleet of worker agents. Every beat it senses the world and, if something changed,
-makes the single most important move — including spawning workers. You don't drive
-it; you steer it by editing goals and the PLAYBOOK. Irreversible actions (merges,
-deploys, deletes) always wait for your explicit yes.
+**looop is the brain, not a task runner.** It watches the things you care about
+(GitHub, Linear, Grafana, …) and runs a fleet of worker agents. Each beat it
+senses the world and, if something changed, decides the *single* most important
+move and executes it — including spawning workers. The judgment lives *inside*
+looop (a small, gated LLM call per beat).
 
-## Architecture
+An autonomous loop is easy. The hard part — and the whole point of looop's
+design — is **where and how a human enters the loop.** Too much human and it
+isn't autonomous; too little and it's reckless. looop's answer is to pull you in
+at exactly two kinds of moments, and nowhere else.
 
-Each beat the pulse runs three steps:
+## How the human stays in the loop
 
-1. **SENSE** — run every `sensors/*.sh`, refreshing `snapshots/`. Unchanged world
-   → stop here, no LLM call.
-2. **DECIDE** — on change, hand PLAYBOOK + goals + readings + asks to the LLM,
-   which returns **one** typed move.
+There are two distinct ways you touch the loop — and that split *is* the design.
+
+**Steer — async, you initiate.** You are a peer, not a driver. You shape *what*
+looop pursues by editing goals and the PLAYBOOK; it observes them next beat. This
+never blocks the loop — you set direction and walk away.
+
+```sh
+looop _ goal write ship-v2 -      # declare desired state (effective next beat)
+looop _ playbook write -          # your judgment, priorities, guardrails
+```
+
+**Answer — sync, the loop initiates.** looop reaches back for *you* only when it
+genuinely must: a worker hits a decision only a human can make, or an
+irreversible action — merge, deploy, delete — needs an explicit yes. It blocks
+and waits for your call.
+
+```sh
+looop _ wait --only-asks          # block cheaply until the loop needs you
+looop _ answer <id> "yes"         # unblock the worker / approve the gate
+```
+
+The key move: **the intervention point is decoupled from any UI.** Asks and
+answers are a durable file mailbox reached through one backend-agnostic contract
+(`looop _ …`), so the loop never blocks on a particular terminal, tmux, or stdin
+— it just needs an answer *eventually*, from whatever channel reaches you:
+
+- a **bare terminal** — you typing the verbs yourself (the thinnest client);
+- an **agent concierge** — a `claude`/`pi` session that relays asks in plain
+  language and answers on your behalf;
+- a **notify script** — a loop that pushes asks to Slack/SMS and relays your reply.
+
+A client is an *interface*, never a decision-maker. looop decides; the client
+just carries the question to you and your answer back.
+
+Two properties make all this dependable:
+
+- **Level-triggered.** All state is plain files, so the loop re-senses every beat
+  and a crashed pulse just re-reads its files on restart. A pending ask survives
+  restarts — no queues, no lost work.
+- **One move per beat.** Each beat does at most one thing; a daily budget caps
+  spend. Behavior stays legible and cheap — an unchanged world costs no LLM call.
+
+## One beat: sense → decide → act
+
+1. **SENSE** — run every `sensors/*.sh`, refreshing `snapshots/`. World unchanged
+   since last beat → stop here, no LLM call.
+2. **DECIDE** — on change, hand the PLAYBOOK + goals + readings + pending asks to
+   the LLM, which returns **one** typed move.
 3. **ACT** — execute it: write a goal/sensor/PLAYBOOK, run one reversible command,
-   or spawn a worker. One move per beat; a daily budget caps spend.
+   or spawn a worker. Irreversible moves are gated — they wait for your `answer`
+   (see above), and so does any worker that hits a human-only decision.
 
-State lives entirely in files, so the loop is **level-triggered**: it re-senses
-every beat and a crashed pulse just re-reads its files on restart. When a worker
-needs a human decision it blocks on `looop _ ask`; you reply with `looop _ answer`
-— a durable mailbox that needs no tmux or stdin.
+## Three layers
 
-Everything is plain files in the data dir:
+| Layer        | What it is                                                            |
+| ------------ | --------------------------------------------------------------------- |
+| **core**     | the autonomous pulse + the durable state behind it. Decides and acts. |
+| **contract** | the `looop _ …` verbs — the one stable, backend-agnostic surface to read and steer core. |
+| **client**   | anything that drives the contract for a human (terminal / concierge / notify). An interface, never a decision-maker. |
+
+State is plain files in the data dir, reached *through* the contract — not a
+public interface:
 
 | File / dir         | Role                                                    |
 | ------------------ | ------------------------------------------------------- |
@@ -45,53 +97,45 @@ curl -fsSL https://raw.githubusercontent.com/yusukeshib/looop/main/install.sh | 
 cargo install looop
 ```
 
-**Runtime dep:** an LLM runner — the only hard requirement. `claude` is the
-default; `codex`, `opencode`, and `pi` are also supported. Run `looop init` to
-pick one (see below).
-Workers run in parallel, so each isolates its own workspace (a `git worktree`, or
-`box` if available) to avoid clobbering another worker's files; this is a worker
-convention, not a dependency of looop itself.
+**Only hard dependency:** an LLM runner. `claude` is the default; `codex`,
+`opencode`, and `pi` also work — pick one with `looop init`. (Workers that touch
+code isolate their own sandbox via `git worktree`, or `box` if available — a
+worker convention, not a looop dependency.)
 
 ## Usage
 
 ```sh
-looop init          # interactive setup: edit the agent commands (tick_command/worker_command)
-looop up            # start the autonomous pulse (detached)
-looop watch         # live log + running-session selector
-looop down          # stop the pulse and all workers
+looop init     # interactive setup — required before `up`; pick the runner wiring
+looop up       # start the autonomous pulse (detached)
+looop watch    # live log + running-session selector (read-only)
+looop down     # stop the pulse and all workers
 ```
 
-`looop init` lets you edit the two command strings of the wiring
-(`tick_command` / `worker_command`), each prefilled with the current value (or the
-built-in **claude** default on first run). It is **required before `looop up`** —
-the pulse refuses to start until the wiring exists, so the agent CLI driving every
-tick and worker is an explicit choice rather than a silent default. See
-[Configuration](#configuration) for ready-made wirings to paste in.
+`looop init` is **required before `looop up`**: the pulse refuses to start until
+the runner wiring exists, so the agent CLI driving every tick and worker is an
+explicit choice, never a silent default. To read and steer core, drive the
+`looop _ …` verbs by hand (`looop _ state`, `_ wait`, `_ answer`, `_ goal write`)
+or let a client drive them for you.
 
 ### First run
 
-looop is steered by an agent, not by you typing commands. The first-run flow:
+looop runs headless, so it can't interview you. A fresh data dir is seeded with a
+starter PLAYBOOK and a `setup` goal whose top priority is exactly that: on the
+first changed beat, looop journals an invitation to configure it. The simplest
+way to answer is an **agent client** ("concierge") — a `claude`/`pi`/`codex`
+session you talk to in plain language:
 
-1. **`looop init`** — accept the claude default, or paste a different runner's
-   wiring (see [Configuration](#configuration)). Required before the pulse starts.
-2. **Start a concierge.** Launch an agent and ask it to drive looop for you:
-   ```sh
-   claude   # or pi / codex / opencode — then say:
-   # "be my looop concierge: run `looop up`, then relay the setup goal and
-   #  interview me to write my goals + sensors + PLAYBOOK"
-   ```
-   The concierge runs `looop up` (starting the autonomous pulse) and speaks plain
-   language while driving the `looop _ …` contract for you — relaying pending
-   asks, helping edit goals, answering on your behalf.
-3. **The first tick opens the `setup` goal.** A fresh data dir is seeded with a
-   starter PLAYBOOK + a `setup` goal whose top priority is exactly this: looop
-   runs headless (it can't interview anyone), so on the first changed beat it
-   journals an invitation that your concierge surfaces, then the concierge
-   interviews you and writes your real goals/sensors/PLAYBOOK. Once customized,
-   archive the `setup` goal and looop runs from there.
+```sh
+claude   # then say:
+# "be my looop concierge: run `looop up`, relay the setup goal, and interview
+#  me to write my goals, sensors, and PLAYBOOK."
+```
 
-You can also skip the concierge entirely: run `looop up` yourself and steer by
-hand (edit goals/PLAYBOOK, or use the `looop _ …` verbs). See `looop help` for the
+The concierge runs `looop up`, surfaces pending asks, and edits your
+goals/PLAYBOOK via the write verbs — speaking plain language while driving the
+contract. Once customized, archive the `setup` goal and looop runs from there.
+
+You can skip the concierge entirely and steer by hand. See `looop help` for the
 full command reference and design manual.
 
 ## Configuration
@@ -99,15 +143,13 @@ full command reference and design manual.
 The config (`$LOOOP_CONFIG`, default `~/.config/looop/config.json`) is just **two
 shell commands** — looop is glue and knows nothing about any specific runner:
 
-| Key              | Role                                                                              |
-| ---------------- | --------------------------------------------------------------------------------- |
-| `tick_command`   | run ONE disposable decision. The tick prompt arrives on **stdin**; must run unattended (no permission prompts — the detached pulse can't answer them) and emit a structured event stream looop can render. |
+| Key              | Role                                                                                     |
+| ---------------- | ---------------------------------------------------------------------------------------- |
+| `tick_command`   | run ONE disposable decision. The prompt arrives on **stdin**; must run unattended (no permission prompts — the detached pulse can't answer them) and emit a structured event stream looop can render. |
 | `worker_command` | launch a worker agent. `{{prompt_file}}` is substituted with the worker's prompt file path. |
 
-(Re-attaching to a worker is handled in-process by looop, so there is no `resume`
-command to configure.) `looop init` just lets you edit these two strings. The
-built-in default is `claude`; paste one of the wirings below (or your own) to
-switch runner.
+`looop init` just lets you edit these two strings. The built-in default is
+`claude`; paste one of the wirings below (or your own) to switch runner.
 
 **claude** (default)
 
