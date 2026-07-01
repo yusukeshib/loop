@@ -261,18 +261,21 @@ fn execute_inner(paths: &Paths, action: &Action) -> Result<String> {
         } => {
             // Reuse the worker-launch path (contract injection, reserved-id
             // guard, corpse reuse, detached spawn).
-            let code = session::cmd_start_session(
+            let outcome = session::cmd_start_session(
                 paths,
                 id,
                 prompt,
                 model.as_deref(),
                 thinking.as_deref(),
             )?;
-            if code != std::process::ExitCode::SUCCESS {
+            if outcome.code != std::process::ExitCode::SUCCESS {
                 bail!("start_worker {id:?} failed");
             }
-            let note = model
-                .as_deref()
+            // Report the model ONLY when it was actually applied (template used
+            // `{{model}}` and a value resolved). A flag ignored for lack of the
+            // placeholder must not leak into the journal.
+            let note = outcome
+                .effective_model
                 .map(|m| format!("start-worker {id} (model: {m})"))
                 .unwrap_or_else(|| format!("start-worker {id}"));
             Ok(note)
