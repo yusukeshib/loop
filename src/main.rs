@@ -168,8 +168,17 @@ fn dispatch(paths: &Paths, cmd: Option<cli::Cmd>) -> Result<ExitCode> {
                 WorkerOp::Start {
                     id,
                     prompt,
+                    model,
+                    thinking,
                     journal,
-                } => executor::start_worker(paths, id, prompt, journal.journal.as_deref()),
+                } => executor::start_worker(
+                    paths,
+                    id,
+                    prompt,
+                    model.as_deref(),
+                    thinking.as_deref(),
+                    journal.journal.as_deref(),
+                ),
                 WorkerOp::Kill { id } => session::cmd_kill(paths, id),
             }),
             Verb::Ask(a) => gated(&|| mailbox::cmd_ask(paths, &a)),

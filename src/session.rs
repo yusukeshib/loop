@@ -17,6 +17,84 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// The outcome of expanding the `worker_command` template.
+struct WorkerCmd {
+    /// The concrete launch command (all placeholders substituted).
+    cmd: String,
+    /// The model actually baked into the command: `Some` ONLY when the template
+    /// carries `{{model}}` AND a value resolved (flag > config default). This is
+    /// what the launch banner / journal should report, so they never claim a
+    /// model the runner won't actually receive.
+    effective_model: Option<String>,
+    /// Warnings to surface (e.g. a flag given for a placeholder the template
+    /// lacks, so the flag was dropped).
+    warnings: Vec<String>,
+}
+
+/// Expand the `worker_command` template into the concrete launch command.
+///
+/// `{{prompt_file}}` is always substituted with `prompt_file`. `{{model}}` and
+/// `{{thinking}}` are substituted with, in precedence order, the CLI flag
+/// (`model`/`thinking`), then the config default (`cfg_model`/`cfg_thinking`),
+/// then the empty string.
+///
+/// Placeholder presence is decided from the ORIGINAL template, BEFORE any
+/// substitution — so a `{{prompt_file}}` value that happens to contain the
+/// literal text `{{model}}` (e.g. via the session id) can never spuriously
+/// trigger model expansion or suppress the missing-placeholder warning.
+///
+/// BACK-COMPAT: a template that does NOT contain a given placeholder is left
+/// untouched, so pre-existing configs (and flag-less starts) render exactly the
+/// same command as before. If a `--model`/`--thinking` FLAG is supplied but the
+/// template lacks the matching placeholder, the flag is ignored and a warning
+/// string is returned (logged by the caller). Config defaults for an absent
+/// placeholder are silently unused (they are just inert config keys).
+fn build_worker_cmd(
+    tmpl: &str,
+    prompt_file: &str,
+    model: Option<&str>,
+    thinking: Option<&str>,
+    cfg_model: Option<&str>,
+    cfg_thinking: Option<&str>,
+) -> WorkerCmd {
+    // Decide placeholder presence from the ORIGINAL template up front, so the
+    // later {{prompt_file}} substitution can't affect the checks below.
+    let has_model = tmpl.contains("{{model}}");
+    let has_thinking = tmpl.contains("{{thinking}}");
+
+    let mut cmd = tmpl.replace("{{prompt_file}}", prompt_file);
+    let mut warnings = Vec::new();
+    let mut effective_model = None;
+
+    for (placeholder, present, flag, cfg, flag_name) in [
+        ("{{model}}", has_model, model, cfg_model, "--model"),
+        (
+            "{{thinking}}",
+            has_thinking,
+            thinking,
+            cfg_thinking,
+            "--thinking",
+        ),
+    ] {
+        if present {
+            let value = flag.or(cfg);
+            cmd = cmd.replace(placeholder, value.unwrap_or(""));
+            if placeholder == "{{model}}" {
+                effective_model = value.map(str::to_owned);
+            }
+        } else if let Some(val) = flag {
+            warnings.push(format!(
+                "{flag_name} {val:?} ignored: worker_command has no {placeholder} placeholder"
+            ));
+        }
+    }
+    WorkerCmd {
+        cmd,
+        effective_model,
+        warnings,
+    }
+}
+
 const CONTRACT: &str = r#"# ⚑ WORKER CONTRACT (auto-injected — must obey)
 - Never send notifications (no terminal-notifier or any OS notification). You are
   an agent; surface anything a human must see by ASKing (below) — the human sees
@@ -67,38 +145,65 @@ const CONTRACT: &str = r#"# ⚑ WORKER CONTRACT (auto-injected — must obey)
 
 "#;
 
-pub fn cmd_start_session(paths: &Paths, args: &[String]) -> Result<ExitCode> {
+/// The result of a worker launch: the process exit code plus the model that was
+/// actually baked into the command (`Some` only when the template's `{{model}}`
+/// placeholder resolved to a value). Callers use `effective_model` for the
+/// journal/banner so they never report a model the runner won't receive.
+pub struct StartOutcome {
+    pub code: ExitCode,
+    pub effective_model: Option<String>,
+}
+
+impl StartOutcome {
+    fn failed() -> Self {
+        StartOutcome {
+            code: ExitCode::from(1),
+            effective_model: None,
+        }
+    }
+}
+
+pub fn cmd_start_session(
+    paths: &Paths,
+    id: &str,
+    prompt: &str,
+    model: Option<&str>,
+    thinking: Option<&str>,
+) -> Result<StartOutcome> {
     seed::ensure_dirs(paths)?;
 
-    let Some(id) = args.first() else {
-        eprintln!("usage: looop start-session <id> <prompt>");
-        return Ok(ExitCode::from(1));
-    };
-    let Some(prompt) = args.get(1) else {
+    // The id becomes both a path segment (the prompt file) and the session id,
+    // so reject traversal/dotfile/separator ids up front — the same guard the
+    // executor applies to goal/sensor ids.
+    if let Err(e) = crate::util::safe_segment("worker id", id) {
+        eprintln!("start-session: {e}");
+        return Ok(StartOutcome::failed());
+    }
+    if prompt.is_empty() {
         eprintln!("missing prompt");
-        return Ok(ExitCode::from(1));
-    };
+        return Ok(StartOutcome::failed());
+    }
 
     let cfg = Config::load(paths)?;
     let runner = cfg.runner_label();
     let Some(tmpl) = cfg.runner_cmd("worker_command") else {
         eprintln!("start-session: no `worker_command` configured");
-        return Ok(ExitCode::from(1));
+        return Ok(StartOutcome::failed());
     };
 
     // The worker's session id IS the goal id (no prefix — the fleet root is
     // looop-exclusive). `pulse` is reserved for the control loop, so a worker
     // can never collide with the pulse.
-    if id.as_str() == PULSE_SESSION {
+    if id == PULSE_SESSION {
         eprintln!("start-session: '{id}' is reserved for the pulse; pick another id");
-        return Ok(ExitCode::from(1));
+        return Ok(StartOutcome::failed());
     }
-    let session = id.clone();
+    let session = id.to_string();
 
     if status_exists(paths, &session) {
         if is_alive(paths, &session) {
             eprintln!("start-session: session {session} is already running");
-            return Ok(ExitCode::from(1));
+            return Ok(StartOutcome::failed());
         }
         reap(paths, &session); // reuse the id held by a dead corpse (targeted)
     }
@@ -111,7 +216,22 @@ pub fn cmd_start_session(paths: &Paths, args: &[String]) -> Result<ExitCode> {
         .replace("__ID__", id);
     fs::write(&prompt_file, format!("{contract}{prompt}\n"))?;
 
-    let cmd = tmpl.replace("{{prompt_file}}", &prompt_file.to_string_lossy());
+    // Expand {{prompt_file}} plus the optional {{model}}/{{thinking}} knobs.
+    // Precedence: CLI flag > config default > empty. A template without the
+    // placeholder is untouched (back-compat); a flag with no matching
+    // placeholder is warned about and dropped.
+    let expanded = build_worker_cmd(
+        &tmpl,
+        &prompt_file.to_string_lossy(),
+        model,
+        thinking,
+        cfg.worker_model().as_deref(),
+        cfg.worker_thinking().as_deref(),
+    );
+    let cmd = expanded.cmd;
+    for w in &expanded.warnings {
+        crate::util::event(crate::util::Level::Warn, "worker.start", w, &[]);
+    }
 
     // The worker runs in the DATA dir. The in-process spawner inherits the
     // current process cwd (babysit's Pane uses `std::env::current_dir`), so we
@@ -136,12 +256,23 @@ pub fn cmd_start_session(paths: &Paths, args: &[String]) -> Result<ExitCode> {
         &session,
     )?;
 
+    // Surface the model the worker was ACTUALLY launched with — i.e. only when
+    // the template used `{{model}}` and a value resolved. Never report a model
+    // the runner won't receive (missing placeholder / ignored flag).
+    let eff_model = expanded.effective_model;
+    let model_note = eff_model
+        .as_deref()
+        .map(|m| format!(", model: {m}"))
+        .unwrap_or_default();
     println!(
-        "started {session} (runner: {runner}, cwd: {})",
+        "started {session} (runner: {runner}{model_note}, cwd: {})",
         paths.data_dir.display()
     );
     println!("  watch: looop attach {id}");
-    Ok(ExitCode::SUCCESS)
+    Ok(StartOutcome {
+        code: ExitCode::SUCCESS,
+        effective_model: eff_model,
+    })
 }
 
 /// Normalize a user-supplied worker id to its full session id. Accepts both the
@@ -555,5 +686,94 @@ mod tests {
     fn pulse_is_recognized() {
         assert!(sess(PULSE_SESSION).is_pulse());
         assert!(!sess("triage").is_pulse());
+    }
+
+    // A template WITHOUT the {{model}}/{{thinking}} placeholders and no flags
+    // renders exactly the legacy command (only {{prompt_file}} substituted).
+    #[test]
+    fn build_worker_cmd_backcompat_no_placeholders() {
+        let tmpl = "pi --model opus @{{prompt_file}}";
+        let out = build_worker_cmd(tmpl, "/p/x.md", None, None, None, None);
+        assert_eq!(out.cmd, "pi --model opus @/p/x.md");
+        assert!(out.warnings.is_empty());
+        assert_eq!(out.effective_model, None);
+    }
+
+    // CLI flags win and are expanded into the placeholders.
+    #[test]
+    fn build_worker_cmd_flags_expand() {
+        let tmpl = "pi --model {{model}} --thinking {{thinking}} @{{prompt_file}}";
+        let out = build_worker_cmd(tmpl, "/p/x.md", Some("sonnet"), Some("high"), None, None);
+        assert_eq!(out.cmd, "pi --model sonnet --thinking high @/p/x.md");
+        assert!(out.warnings.is_empty());
+        assert_eq!(out.effective_model.as_deref(), Some("sonnet"));
+    }
+
+    // With no flag, the config defaults fill the placeholders; a flag overrides
+    // its config default independently.
+    #[test]
+    fn build_worker_cmd_config_defaults_and_override() {
+        let tmpl = "pi --model {{model}} --thinking {{thinking}} @{{prompt_file}}";
+        let cfg_only = build_worker_cmd(tmpl, "/p/x.md", None, None, Some("opus"), Some("medium"));
+        assert_eq!(cfg_only.cmd, "pi --model opus --thinking medium @/p/x.md");
+        assert_eq!(cfg_only.effective_model.as_deref(), Some("opus"));
+
+        let override_model = build_worker_cmd(
+            tmpl,
+            "/p/x.md",
+            Some("haiku"),
+            None,
+            Some("opus"),
+            Some("medium"),
+        );
+        assert_eq!(
+            override_model.cmd,
+            "pi --model haiku --thinking medium @/p/x.md"
+        );
+        assert_eq!(override_model.effective_model.as_deref(), Some("haiku"));
+    }
+
+    // A placeholder with neither flag nor config default expands to empty, and
+    // reports no effective model (there is nothing to report).
+    #[test]
+    fn build_worker_cmd_missing_value_expands_empty() {
+        let tmpl = "pi --model {{model}} @{{prompt_file}}";
+        let out = build_worker_cmd(tmpl, "/p/x.md", None, None, None, None);
+        assert_eq!(out.cmd, "pi --model  @/p/x.md");
+        assert!(out.warnings.is_empty());
+        assert_eq!(out.effective_model, None);
+    }
+
+    // A flag supplied against a template that lacks the placeholder is ignored
+    // with a warning (config defaults for a missing placeholder stay silent),
+    // and no effective model is reported.
+    #[test]
+    fn build_worker_cmd_flag_without_placeholder_warns() {
+        let tmpl = "claude --model opus @{{prompt_file}}";
+        let out = build_worker_cmd(tmpl, "/p/x.md", Some("sonnet"), None, None, Some("medium"));
+        // Template rendered unchanged (flag dropped, config default ignored).
+        assert_eq!(out.cmd, "claude --model opus @/p/x.md");
+        assert_eq!(out.warnings.len(), 1);
+        assert!(out.warnings[0].contains("--model"));
+        assert!(out.warnings[0].contains("{{model}}"));
+        assert_eq!(out.effective_model, None);
+    }
+
+    // REGRESSION (#1): placeholder presence is judged from the ORIGINAL
+    // template, so a prompt-file path that itself contains the literal
+    // `{{model}}` (e.g. via a crafted session id) must NOT trigger model
+    // expansion, and a `--model` flag against such a template still warns.
+    #[test]
+    fn build_worker_cmd_prompt_path_with_literal_placeholder() {
+        let tmpl = "claude @{{prompt_file}}";
+        let sneaky_path = "/p/{{model}}.md";
+        let out = build_worker_cmd(tmpl, sneaky_path, Some("sonnet"), None, None, None);
+        // The path is substituted verbatim; the injected `{{model}}` is NOT
+        // expanded (the template had no model placeholder).
+        assert_eq!(out.cmd, "claude @/p/{{model}}.md");
+        // The flag is still reported as ignored, and no model is baked in.
+        assert_eq!(out.warnings.len(), 1);
+        assert!(out.warnings[0].contains("{{model}}"));
+        assert_eq!(out.effective_model, None);
     }
 }

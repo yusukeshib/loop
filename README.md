@@ -148,7 +148,17 @@ or `custom`; after that looop treats the result as plain runner wiring:
 | Key              | Role                                                                                     |
 | ---------------- | ---------------------------------------------------------------------------------------- |
 | `tick_command`   | run ONE disposable decision. The prompt is passed via the `{{prompt_file}}` placeholder (substituted with the prompt file path — read it with `$(cat {{prompt_file}})` or `@{{prompt_file}}`). If you omit the placeholder the prompt is piped in on **stdin** instead. Must run unattended (no permission prompts — the detached pulse can't answer them) and emit a structured event stream looop can render. |
-| `worker_command` | launch a worker agent. Same `{{prompt_file}}` placeholder, substituted with the worker's prompt file path. (A worker can't use the stdin fallback — stdin is its live attach TTY.) |
+| `worker_command` | launch a worker agent. Same `{{prompt_file}}` placeholder, substituted with the worker's prompt file path. (A worker can't use the stdin fallback — stdin is its live attach TTY.) It may also carry `{{model}}` and `{{thinking}}` placeholders for per-worker model selection (see below). |
+
+**Per-worker model selection.** The `worker_command` may include `{{model}}` and `{{thinking}}` placeholders. When a worker starts they are substituted with, in precedence order: the `looop _ worker start --model M --thinking L` flags, then the optional top-level `worker_model` / `worker_thinking` config keys, then the empty string. A template that omits a placeholder is left untouched, so configs and flag-less starts behave exactly as before; passing `--model` against a template with no `{{model}}` placeholder logs a warning and is ignored. Example wiring:
+
+```json
+{
+  "worker_command": "pi --model {{model}} --thinking {{thinking}} @{{prompt_file}}",
+  "worker_model": "claude-opus-4-8",
+  "worker_thinking": "medium"
+}
+```
 
 The built-in presets are:
 

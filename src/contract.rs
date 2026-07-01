@@ -79,8 +79,17 @@ pub trait Contract {
     fn playbook_write(&self, body: &str, journal: Option<&str>) -> Result<String>;
     /// Run one ad-hoc, REVERSIBLE shell command; returns the executor's summary.
     fn run(&self, cmd: &str, reason: &str, journal: Option<&str>) -> Result<String>;
-    /// Spawn a worker session; returns the executor's summary line.
-    fn worker_start(&self, id: &str, prompt: &str, journal: Option<&str>) -> Result<String>;
+    /// Spawn a worker session; returns the executor's summary line. `model`/
+    /// `thinking` are optional per-worker overrides for the worker command
+    /// template's `{{model}}`/`{{thinking}}` placeholders.
+    fn worker_start(
+        &self,
+        id: &str,
+        prompt: &str,
+        model: Option<&str>,
+        thinking: Option<&str>,
+        journal: Option<&str>,
+    ) -> Result<String>;
     /// Atomically acquire the named lease.
     fn claim(&self, name: &str, session: Option<&str>) -> Result<ClaimOutcome>;
     /// Release the named lease. `Ok(false)` ⇒ a different live session holds it.
@@ -186,12 +195,21 @@ impl Contract for LocalContract<'_> {
         )
     }
 
-    fn worker_start(&self, id: &str, prompt: &str, journal: Option<&str>) -> Result<String> {
+    fn worker_start(
+        &self,
+        id: &str,
+        prompt: &str,
+        model: Option<&str>,
+        thinking: Option<&str>,
+        journal: Option<&str>,
+    ) -> Result<String> {
         run_action(
             self.paths,
             &Action::StartWorker {
                 id: id.to_string(),
                 prompt: prompt.to_string(),
+                model: model.map(str::to_owned),
+                thinking: thinking.map(str::to_owned),
             },
             journal,
         )
