@@ -17,6 +17,47 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Expand the `worker_command` template into the concrete launch command.
+///
+/// `{{prompt_file}}` is always substituted with `prompt_file`. `{{model}}` and
+/// `{{thinking}}` are substituted with, in precedence order, the CLI flag
+/// (`model`/`thinking`), then the config default (`cfg_model`/`cfg_thinking`),
+/// then the empty string.
+///
+/// BACK-COMPAT: a template that does NOT contain a given placeholder is left
+/// untouched, so pre-existing configs (and flag-less starts) render exactly the
+/// same command as before. If a `--model`/`--thinking` FLAG is supplied but the
+/// template lacks the matching placeholder, the flag is ignored and a warning
+/// string is returned (logged by the caller). Config defaults for an absent
+/// placeholder are silently unused (they are just inert config keys).
+///
+/// Returns the expanded command plus any warnings to surface.
+fn build_worker_cmd(
+    tmpl: &str,
+    prompt_file: &str,
+    model: Option<&str>,
+    thinking: Option<&str>,
+    cfg_model: Option<&str>,
+    cfg_thinking: Option<&str>,
+) -> (String, Vec<String>) {
+    let mut cmd = tmpl.replace("{{prompt_file}}", prompt_file);
+    let mut warnings = Vec::new();
+
+    for (placeholder, flag, cfg, flag_name) in [
+        ("{{model}}", model, cfg_model, "--model"),
+        ("{{thinking}}", thinking, cfg_thinking, "--thinking"),
+    ] {
+        if cmd.contains(placeholder) {
+            cmd = cmd.replace(placeholder, flag.or(cfg).unwrap_or(""));
+        } else if let Some(val) = flag {
+            warnings.push(format!(
+                "{flag_name} {val:?} ignored: worker_command has no {placeholder} placeholder"
+            ));
+        }
+    }
+    (cmd, warnings)
+}
+
 const CONTRACT: &str = r#"# ⚑ WORKER CONTRACT (auto-injected — must obey)
 - Never send notifications (no terminal-notifier or any OS notification). You are
   an agent; surface anything a human must see by ASKing (below) — the human sees
@@ -67,17 +108,23 @@ const CONTRACT: &str = r#"# ⚑ WORKER CONTRACT (auto-injected — must obey)
 
 "#;
 
-pub fn cmd_start_session(paths: &Paths, args: &[String]) -> Result<ExitCode> {
+pub fn cmd_start_session(
+    paths: &Paths,
+    id: &str,
+    prompt: &str,
+    model: Option<&str>,
+    thinking: Option<&str>,
+) -> Result<ExitCode> {
     seed::ensure_dirs(paths)?;
 
-    let Some(id) = args.first() else {
+    if id.is_empty() {
         eprintln!("usage: looop start-session <id> <prompt>");
         return Ok(ExitCode::from(1));
-    };
-    let Some(prompt) = args.get(1) else {
+    }
+    if prompt.is_empty() {
         eprintln!("missing prompt");
         return Ok(ExitCode::from(1));
-    };
+    }
 
     let cfg = Config::load(paths)?;
     let runner = cfg.runner_label();
@@ -89,11 +136,11 @@ pub fn cmd_start_session(paths: &Paths, args: &[String]) -> Result<ExitCode> {
     // The worker's session id IS the goal id (no prefix — the fleet root is
     // looop-exclusive). `pulse` is reserved for the control loop, so a worker
     // can never collide with the pulse.
-    if id.as_str() == PULSE_SESSION {
+    if id == PULSE_SESSION {
         eprintln!("start-session: '{id}' is reserved for the pulse; pick another id");
         return Ok(ExitCode::from(1));
     }
-    let session = id.clone();
+    let session = id.to_string();
 
     if status_exists(paths, &session) {
         if is_alive(paths, &session) {
@@ -111,7 +158,21 @@ pub fn cmd_start_session(paths: &Paths, args: &[String]) -> Result<ExitCode> {
         .replace("__ID__", id);
     fs::write(&prompt_file, format!("{contract}{prompt}\n"))?;
 
-    let cmd = tmpl.replace("{{prompt_file}}", &prompt_file.to_string_lossy());
+    // Expand {{prompt_file}} plus the optional {{model}}/{{thinking}} knobs.
+    // Precedence: CLI flag > config default > empty. A template without the
+    // placeholder is untouched (back-compat); a flag with no matching
+    // placeholder is warned about and dropped.
+    let (cmd, warnings) = build_worker_cmd(
+        &tmpl,
+        &prompt_file.to_string_lossy(),
+        model,
+        thinking,
+        cfg.worker_model().as_deref(),
+        cfg.worker_thinking().as_deref(),
+    );
+    for w in &warnings {
+        crate::util::event(crate::util::Level::Warn, "worker.start", w, &[]);
+    }
 
     // The worker runs in the DATA dir. The in-process spawner inherits the
     // current process cwd (babysit's Pane uses `std::env::current_dir`), so we
@@ -136,8 +197,15 @@ pub fn cmd_start_session(paths: &Paths, args: &[String]) -> Result<ExitCode> {
         &session,
     )?;
 
+    // Surface which model the worker was launched with (flag > config default),
+    // so the started banner / logs record it. Empty when neither is set.
+    let cfg_model = cfg.worker_model();
+    let eff_model = model.or(cfg_model.as_deref());
+    let model_note = eff_model
+        .map(|m| format!(", model: {m}"))
+        .unwrap_or_default();
     println!(
-        "started {session} (runner: {runner}, cwd: {})",
+        "started {session} (runner: {runner}{model_note}, cwd: {})",
         paths.data_dir.display()
     );
     println!("  watch: looop attach {id}");
@@ -555,5 +623,71 @@ mod tests {
     fn pulse_is_recognized() {
         assert!(sess(PULSE_SESSION).is_pulse());
         assert!(!sess("triage").is_pulse());
+    }
+
+    // A template WITHOUT the {{model}}/{{thinking}} placeholders and no flags
+    // renders exactly the legacy command (only {{prompt_file}} substituted).
+    #[test]
+    fn build_worker_cmd_backcompat_no_placeholders() {
+        let tmpl = "pi --model opus @{{prompt_file}}";
+        let (cmd, warns) = build_worker_cmd(tmpl, "/p/x.md", None, None, None, None);
+        assert_eq!(cmd, "pi --model opus @/p/x.md");
+        assert!(warns.is_empty());
+    }
+
+    // CLI flags win and are expanded into the placeholders.
+    #[test]
+    fn build_worker_cmd_flags_expand() {
+        let tmpl = "pi --model {{model}} --thinking {{thinking}} @{{prompt_file}}";
+        let (cmd, warns) =
+            build_worker_cmd(tmpl, "/p/x.md", Some("sonnet"), Some("high"), None, None);
+        assert_eq!(cmd, "pi --model sonnet --thinking high @/p/x.md");
+        assert!(warns.is_empty());
+    }
+
+    // With no flag, the config defaults fill the placeholders; a flag overrides
+    // its config default independently.
+    #[test]
+    fn build_worker_cmd_config_defaults_and_override() {
+        let tmpl = "pi --model {{model}} --thinking {{thinking}} @{{prompt_file}}";
+        let (cfg_only, _) =
+            build_worker_cmd(tmpl, "/p/x.md", None, None, Some("opus"), Some("medium"));
+        assert_eq!(cfg_only, "pi --model opus --thinking medium @/p/x.md");
+
+        let (override_model, _) = build_worker_cmd(
+            tmpl,
+            "/p/x.md",
+            Some("haiku"),
+            None,
+            Some("opus"),
+            Some("medium"),
+        );
+        assert_eq!(
+            override_model,
+            "pi --model haiku --thinking medium @/p/x.md"
+        );
+    }
+
+    // A placeholder with neither flag nor config default expands to empty.
+    #[test]
+    fn build_worker_cmd_missing_value_expands_empty() {
+        let tmpl = "pi --model {{model}} @{{prompt_file}}";
+        let (cmd, warns) = build_worker_cmd(tmpl, "/p/x.md", None, None, None, None);
+        assert_eq!(cmd, "pi --model  @/p/x.md");
+        assert!(warns.is_empty());
+    }
+
+    // A flag supplied against a template that lacks the placeholder is ignored
+    // with a warning (config defaults for a missing placeholder stay silent).
+    #[test]
+    fn build_worker_cmd_flag_without_placeholder_warns() {
+        let tmpl = "claude --model opus @{{prompt_file}}";
+        let (cmd, warns) =
+            build_worker_cmd(tmpl, "/p/x.md", Some("sonnet"), None, None, Some("medium"));
+        // Template rendered unchanged (flag dropped, config default ignored).
+        assert_eq!(cmd, "claude --model opus @/p/x.md");
+        assert_eq!(warns.len(), 1);
+        assert!(warns[0].contains("--model"));
+        assert!(warns[0].contains("{{model}}"));
     }
 }

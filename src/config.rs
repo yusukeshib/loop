@@ -35,6 +35,14 @@
 //! opus`). Spend stays bounded because the world-hash gate skips the AI entirely
 //! when nothing changed, and the tick emits only one tiny decision. Tune by
 //! editing the commands (`looop init` or the file directly).
+//!
+//! PER-WORKER MODEL: the `worker_command` may also carry `{{model}}` and
+//! `{{thinking}}` placeholders. On `looop _ worker start` they are substituted
+//! with the `--model`/`--thinking` flags (highest precedence), else the optional
+//! `worker_model` / `worker_thinking` config keys, else the empty string. A
+//! template WITHOUT these placeholders is left untouched (so pre-existing
+//! configs and flag-less starts behave exactly as before); passing `--model`
+//! against such a template logs a warning and is ignored.
 
 use crate::paths::Paths;
 use anyhow::{Context, Result};
@@ -110,6 +118,32 @@ impl Config {
             .or_else(|| legacy.and_then(|l| self.root.get(l)))?
             .as_str()
             .map(strip_fmt_seam)
+    }
+
+    /// The default value expanded into the worker command's `{{model}}`
+    /// placeholder when `looop _ worker start` runs without `--model`. Optional:
+    /// absent (or empty) means "no default", so the placeholder expands to the
+    /// empty string unless a `--model` flag overrides it. Configs that carry
+    /// neither this key nor the placeholder behave exactly as before.
+    pub fn worker_model(&self) -> Option<String> {
+        self.string_key("worker_model")
+    }
+
+    /// The default value expanded into the worker command's `{{thinking}}`
+    /// placeholder when `looop _ worker start` runs without `--thinking`.
+    /// Same optional/back-compat semantics as [`Config::worker_model`].
+    pub fn worker_thinking(&self) -> Option<String> {
+        self.string_key("worker_thinking")
+    }
+
+    /// Read an optional top-level string config key, treating a missing key,
+    /// a non-string value, and an empty string all as `None`.
+    fn string_key(&self, key: &str) -> Option<String> {
+        self.root
+            .get(key)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
     }
 }
 
@@ -214,6 +248,27 @@ mod tests {
             cfg.runner_cmd("worker_command").unwrap(),
             "W {{prompt_file}}"
         );
+    }
+
+    #[test]
+    fn worker_model_and_thinking_are_optional() {
+        // Absent keys -> None (back-compat: existing configs are unchanged).
+        let bare = super::Config {
+            root: serde_json::from_str(super::DEFAULT_CONFIG).unwrap(),
+        };
+        assert_eq!(bare.worker_model(), None);
+        assert_eq!(bare.worker_thinking(), None);
+
+        // Present keys are read back; empty strings collapse to None.
+        let cfg = super::Config {
+            root: serde_json::json!({
+                "worker_command": "pi --model {{model}} @{{prompt_file}}",
+                "worker_model": "claude-opus-4-8",
+                "worker_thinking": ""
+            }),
+        };
+        assert_eq!(cfg.worker_model().as_deref(), Some("claude-opus-4-8"));
+        assert_eq!(cfg.worker_thinking(), None);
     }
 
     #[test]

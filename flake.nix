@@ -16,7 +16,7 @@
         # configured LLM runner is the user's to provide.
         looop = pkgs.rustPlatform.buildRustPackage {
           pname = "looop";
-          version = "0.37.0";
+          version = "0.38.0";
           src = ./.;
 
           cargoLock.lockFile = ./Cargo.lock;

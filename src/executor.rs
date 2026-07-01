@@ -46,8 +46,17 @@ pub enum Action {
     WriteSensor { name: String, script: String },
     /// Replace PLAYBOOK.md.
     WritePlaybook { body: String },
-    /// Spawn a worker session for hands-on work.
-    StartWorker { id: String, prompt: String },
+    /// Spawn a worker session for hands-on work. `model`/`thinking` are optional
+    /// per-worker overrides expanded into the `worker_command` template's
+    /// `{{model}}`/`{{thinking}}` placeholders (see `session::cmd_start_session`).
+    StartWorker {
+        id: String,
+        prompt: String,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        thinking: Option<String>,
+    },
 }
 
 /// A short, stable word naming the action's category — for the typed stdout
@@ -244,14 +253,29 @@ fn execute_inner(paths: &Paths, action: &Action) -> Result<String> {
             Ok("write-playbook".into())
         }
 
-        Action::StartWorker { id, prompt } => {
+        Action::StartWorker {
+            id,
+            prompt,
+            model,
+            thinking,
+        } => {
             // Reuse the worker-launch path (contract injection, reserved-id
             // guard, corpse reuse, detached spawn).
-            let code = session::cmd_start_session(paths, &[id.clone(), prompt.clone()])?;
+            let code = session::cmd_start_session(
+                paths,
+                id,
+                prompt,
+                model.as_deref(),
+                thinking.as_deref(),
+            )?;
             if code != std::process::ExitCode::SUCCESS {
                 bail!("start_worker {id:?} failed");
             }
-            Ok(format!("start-worker {id}"))
+            let note = model
+                .as_deref()
+                .map(|m| format!("start-worker {id} (model: {m})"))
+                .unwrap_or_else(|| format!("start-worker {id}"));
+            Ok(note)
         }
     }
 }
@@ -451,11 +475,15 @@ pub fn cmd_run(paths: &Paths, args: &crate::cli::RunArgs) -> Result<ExitCode> {
     )?)
 }
 
-/// `looop _ worker start <id> <prompt…|->` — spawn a worker session (journaled).
+/// `looop _ worker start <id> <prompt…|-> [--model M] [--thinking L]` — spawn a
+/// worker session (journaled). `model`/`thinking` are optional per-worker
+/// overrides for the `worker_command` template's placeholders.
 pub fn start_worker(
     paths: &Paths,
     id: &str,
     prompt: &[String],
+    model: Option<&str>,
+    thinking: Option<&str>,
     journal: Option<&str>,
 ) -> Result<ExitCode> {
     use crate::contract::Contract;
@@ -464,7 +492,8 @@ pub fn start_worker(
         eprintln!("usage: looop _ worker start <id> <prompt…|->");
         return Ok(ExitCode::from(1));
     }
-    ok(crate::contract::LocalContract::new(paths).worker_start(id, &prompt, journal)?)
+    ok(crate::contract::LocalContract::new(paths)
+        .worker_start(id, &prompt, model, thinking, journal)?)
 }
 
 #[cfg(test)]
@@ -558,7 +587,9 @@ mod tests {
         }));
         assert!(!is_non_idempotent(&Action::StartWorker {
             id: "w".into(),
-            prompt: "p".into()
+            prompt: "p".into(),
+            model: None,
+            thinking: None
         }));
     }
 
@@ -623,7 +654,9 @@ mod tests {
         assert_eq!(
             goal_of(&Action::StartWorker {
                 id: "triage".into(),
-                prompt: "p".into()
+                prompt: "p".into(),
+                model: None,
+                thinking: None
             }),
             Some("triage".into())
         );
