@@ -33,7 +33,6 @@ mod session;
 mod store;
 mod tick;
 mod util;
-mod watch;
 mod worldhash;
 
 use anyhow::Result;
@@ -100,8 +99,8 @@ fn main() -> ExitCode {
 }
 
 /// Route a parsed command to its handler. The deps gate wraps every verb that
-/// actually touches the loop's tools; read-only/meta verbs (watch, help,
-/// version) skip it, matching the pre-clap wiring.
+/// actually touches the loop's tools; read-only/meta verbs (help, version)
+/// skip it, matching the pre-clap wiring.
 fn dispatch(paths: &Paths, cmd: Option<cli::Cmd>) -> Result<ExitCode> {
     use cli::{Cmd, GoalOp, PlaybookOp, SensorOp, Verb, WorkerOp};
 
@@ -135,11 +134,9 @@ fn dispatch(paths: &Paths, cmd: Option<cli::Cmd>) -> Result<ExitCode> {
         // not even want), then runs the deps preflight itself.
         Cmd::Up(a) => service::cmd_up(paths, a.json),
         Cmd::Down => gated(&|| service::cmd_down(paths)),
-        // Read-only observer TUI — no deps gate (only reads logs + lists
-        // sessions, never launches an agent).
-        Cmd::Watch(a) => watch::cmd_watch(paths, &a),
-        // Non-agent client TUI — gated (it resolves asks, a contract write).
-        Cmd::Client => gated(&|| client::cmd_client(paths)),
+        // The human TUI — gated (it resolves asks and types into workers,
+        // both contract writes).
+        Cmd::Client(a) => gated(&|| client::cmd_client(paths, &a)),
         Cmd::Underscore { verb } => match verb {
             Verb::Pulse => gated(&|| service::cmd_pulse(paths)),
             Verb::State(a) => gated(&|| tick::cmd_state(paths, a.json)),

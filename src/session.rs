@@ -285,14 +285,14 @@ fn full_session(id: &str) -> String {
 
 /// The pulse is the control loop, NOT a worker: refuse worker-management verbs
 /// aimed at it so a stray `looop _ kill pulse` / `attach pulse` can't decapitate
-/// or hijack the loop. Observe it with `looop watch`/`log`; control it with
+/// or hijack the loop. Observe it with `looop client`; control it with
 /// a bare `looop`. Returns true (and prints guidance) when `session` is the
 /// reserved pulse id — the caller should then bail with a non-zero code.
 fn reject_pulse(session: &str, verb: &str) -> bool {
     if session == PULSE_SESSION {
         eprintln!(
             "looop {verb}: '{PULSE_SESSION}' is the control loop, not a worker — observe it with \
-             `looop watch {PULSE_SESSION}` / `looop log {PULSE_SESSION}`, start it by running \
+             `looop client {PULSE_SESSION}`, start it by running \
              `looop` (Ctrl-C stops it)"
         );
         true
@@ -336,6 +336,21 @@ pub fn cmd_send(paths: &Paths, args: &crate::cli::SendArgs) -> Result<ExitCode> 
     )?;
     println!("sent to {session}");
     Ok(ExitCode::SUCCESS)
+}
+
+/// In-process core of `_ send` for the client TUI: type `text` plus a trailing
+/// Enter into a live session's PTY. No printing — the caller surfaces the
+/// outcome. Refuses the pulse (mirrors `cmd_send`'s guard).
+pub fn send_text(paths: &Paths, session: &str, text: &str) -> Result<()> {
+    if session == PULSE_SESSION {
+        anyhow::bail!("'{PULSE_SESSION}' is the control loop, not a worker");
+    }
+    rt().block_on(
+        paths
+            .sessions()
+            .send(Some(session.to_string()), text.to_string(), true, false),
+    )?;
+    Ok(())
 }
 
 /// `looop _ screenshot <id> [--ansi|--json] [--no-trim]` — capture a session's

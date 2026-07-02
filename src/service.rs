@@ -16,7 +16,7 @@ use std::time::Duration;
 
 /// `looop up [--json]` — start the autonomous pulse (idempotent). looop runs
 /// itself from there; steer by editing goals/PLAYBOOK or run a client to watch
-/// and relay (`looop watch`, or an agent session pointed at `looop _ state`).
+/// and relay (`looop client`, or an agent session pointed at `looop _ state`).
 pub fn cmd_up(paths: &Paths, json: bool) -> Result<ExitCode> {
     // Hard gate: refuse to start the pulse until the operator has run `looop
     // init`. The runner wiring is a deliberate choice (which agent CLI drives

@@ -65,7 +65,7 @@ fn read_answer(store: &impl StateStore, ask_id: &str) -> Option<String> {
 }
 
 /// All asks that have NO matching answer yet. Read-only; used by `_ state` and
-/// the decide prompt (so looop sees what's blocked) and by `looop watch` / any
+/// the decide prompt (so looop sees what's blocked) and by `looop client` / any
 /// client (so the human sees what's waiting on them).
 pub fn pending(paths: &Paths) -> Vec<Ask> {
     let store = FileStore::new(paths);
@@ -147,7 +147,7 @@ pub(crate) fn ask(
         ],
     );
 
-    // Block until answered. The human sees this ask (via `looop watch` / a
+    // Block until answered. The human sees this ask (via `looop client` / a
     // client / `looop _ state`) and replies with `looop _ answer <id>`.
     let poll = Duration::from_millis(
         std::env::var("LOOOP_ASK_POLL_MS")
