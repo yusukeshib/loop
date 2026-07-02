@@ -107,8 +107,7 @@ looop dependency.)
 ```sh
 looop init     # interactive setup — required before `up`; pick the runner wiring
 looop up       # start the autonomous pulse (detached)
-looop watch    # live log + running-session selector (read-only)
-looop client   # non-agent TUI: pending asks always on screen, answer by hand
+looop client   # the human TUI: live logs + session picker + answer/send input
 looop down     # stop the pulse and all workers
 ```
 
@@ -123,8 +122,9 @@ looop runs headless, so it can't interview you. A fresh data dir is seeded with 
 starter PLAYBOOK, a `setup` goal, and a real pending `setup` ask so a client
 waiting on asks wakes immediately.
 
-Start with `looop up` then `looop client`: the TUI keeps the pending ask list on
-screen and lets you answer by hand — no extra tooling, just looop. Answer the
+Start with `looop up` then `looop client`: a ⚑ badge floats up the moment an ask
+is pending, and the input line answers it in place — no extra tooling, just
+looop. Answer the
 starter `setup` ask, edit your goals/PLAYBOOK with the `looop _ …` verbs, archive
 the `setup` goal, and looop runs from there.
 

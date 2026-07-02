@@ -1,6 +1,6 @@
 //! The single clap-derived front door for the whole CLI.
 //!
-//! Every verb — the human/client surface (`up`, `down`, `watch`) and the
+//! Every verb — the human/client surface (`up`, `down`, `client`) and the
 //! machine-facing `_` plumbing (steer verbs + worker self-callbacks) — is
 //! declared here as typed args. clap owns parsing, so we
 //! get, uniformly and for free across every verb:
@@ -51,10 +51,9 @@ pub enum Cmd {
     Up(UpArgs),
     /// Tear the pulse (and workers) down.
     Down,
-    /// Read-only observer TUI over a running session's log.
-    Watch(WatchArgs),
-    /// Non-agent TUI: see pending worker asks and answer them by hand.
-    Client,
+    /// The human TUI: live session logs, pending asks, and an always-on
+    /// input (answers a pending ask, otherwise types into the worker).
+    Client(ClientArgs),
     /// Machine-facing plumbing verbs (the contract a client drives).
     #[command(name = "_")]
     Underscore {
@@ -71,7 +70,7 @@ pub struct UpArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct WatchArgs {
+pub struct ClientArgs {
     /// Session id to focus initially.
     pub id: Option<String>,
     /// Show all sessions, not just active ones.
