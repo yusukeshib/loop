@@ -509,9 +509,10 @@ impl App {
                 _ => {}
             },
             // The detail pane is open. The bottom input is always focused, so
-            // PRINTABLE keys type the answer and Enter submits it; the read
-            // area is scrolled by the (non-typing) arrow/page keys, the wheel,
-            // and the scrollbar. ESC closes back to the list.
+            // PRINTABLE keys type the answer and Enter submits it. Up/Down keep
+            // navigating the LIST even with the pane focused (the pane follows
+            // the selection); the read area scrolls via page keys, Ctrl-d/u,
+            // the wheel, and the scrollbar. ESC closes back to the list.
             //
             // Note there is no `q`-to-quit here: `q` is a legal answer
             // character. Quit with ESC then `q`, or Ctrl-C anywhere.
@@ -523,8 +524,8 @@ impl App {
                     KeyCode::Backspace => {
                         self.input.pop();
                     }
-                    KeyCode::Down => self.scroll_detail(1),
-                    KeyCode::Up => self.scroll_detail(-1),
+                    KeyCode::Down => self.move_selection(1),
+                    KeyCode::Up => self.move_selection(-1),
                     KeyCode::PageDown => self.scroll_detail(page),
                     KeyCode::PageUp => self.scroll_detail(-page),
                     KeyCode::Char('d') if ctrl => self.scroll_detail(page / 2),
@@ -841,7 +842,7 @@ impl App {
             Some(msg) => format!(" {msg} "),
             None => match self.mode {
                 Mode::List => " ↑/↓ move · enter open · q quit ".to_string(),
-                Mode::Detail => " type answer · enter send · ↑/↓ scroll · esc close ".to_string(),
+                Mode::Detail => " type answer · enter send · ↑/↓ move · pgup/pgdn scroll · esc close ".to_string(),
             },
         };
         frame.render_widget(Paragraph::new(Span::styled(help, style)).style(style), area);
