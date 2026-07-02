@@ -727,13 +727,7 @@ impl App {
             height: area.height,
         };
 
-        // The pinned id (not the live row) titles the pane, so it still names
-        // the ask even if that ask just left the pending list under us.
-        let id = self.selected_id.as_deref().unwrap_or("—");
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" {id} "))
-            .border_style(dim());
+        let block = Block::default().borders(Borders::ALL).border_style(dim());
         let inner = block.inner(float);
         frame.render_widget(Clear, float);
         frame.render_widget(block, float);
